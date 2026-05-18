@@ -1,0 +1,16 @@
+{
+  "name": "nestled-upgrader",
+  "version": "0.1.0",
+  "description": "Control-plane CLI for propagating Nestled template upgrades.",
+  "type": "module",
+  "bin": {
+    "nestled-upgrader": "./bin/nestled-upgrader.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

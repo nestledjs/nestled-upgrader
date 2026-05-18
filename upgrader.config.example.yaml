@@ -1,0 +1,49 @@
+# Copy this file to upgrader.config.yaml and customize for your setup.
+#
+# promotion.source: the dev/working template repo where upgrade notes are authored.
+# template: the canonical template repo that projects clone from.
+# projects: downstream projects to upgrade.
+
+promotion:
+  source:
+    name: my-dev-template
+    path: ../my-dev-template
+
+template:
+  name: my-template
+  path: ../my-template
+  mainBranch: main
+
+# Optional: auto-discover sibling directories as projects.
+# Repos listed here are excluded from discovery.
+discover:
+  exclude:
+    - my-dev-template
+    - my-template
+
+projects:
+  # The canonical template itself — receives promoted changes first.
+  - name: my-template
+    path: ../my-template
+    defaultBranch: main
+    role: template-promotion
+    autoPR: true
+    # Paths excluded from raw patch promotion (managed separately).
+    rawPatchExcludes:
+      - package.json
+      - pnpm-lock.yaml
+      - package-lock.json
+      - yarn.lock
+    forkedAreas: []
+    verification: []
+
+  # A downstream product project.
+  - name: my-app
+    path: ../my-app
+    defaultBranch: main
+    # Mark areas your project has diverged from the template.
+    forkedAreas: []
+    # Commands run to verify the project after applying an upgrade.
+    verification:
+      - pnpm lint
+      - pnpm test

@@ -1,0 +1,9 @@
+node_modules/
+
+# Instance-specific operational files — not for version control.
+# Copy upgrader.config.example.yaml to upgrader.config.yaml and customize.
+upgrader.config.yaml
+upgrader.state.yaml
+upgrades/
+patches/
+reports/
