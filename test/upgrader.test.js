@@ -886,6 +886,14 @@ index 0000000..aaaaaaa
 +title: Use CSPRNG for auth delay
 +delivery: code-patch
 `;
+  const downstreamPatch = `${patch}diff --git a/.nestled/upgrade-log.yaml b/.nestled/upgrade-log.yaml
+index 3333333..4444444 100644
+--- a/.nestled/upgrade-log.yaml
++++ b/.nestled/upgrade-log.yaml
+@@ -1 +1 @@
+-local-log: true
++template-log: true
+`;
   const upgradeYaml = `
 id: 2026-05-17-auth-delay
 title: Use CSPRNG for auth delay
@@ -902,7 +910,9 @@ verification: []
 
   function makeRepo(dir) {
     fs.mkdirSync(path.join(dir, '.nestled-updates', 'upgrade-notes'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.nestled'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'auth.service.ts'), 'const delay = Math.random() * 100;\n');
+    fs.writeFileSync(path.join(dir, '.nestled', 'upgrade-log.yaml'), 'local-log: true\n');
     git(dir, ['init']);
     git(dir, ['config', 'user.email', 'test@example.com']);
     git(dir, ['config', 'user.name', 'Test User']);
@@ -962,12 +972,13 @@ projects:
     verification: []
 `);
     fs.writeFileSync(path.join(root, 'upgrades', '2026-05-17-auth-delay.yaml'), upgradeYaml);
-    fs.writeFileSync(path.join(root, 'patches', '2026-05-17-auth-delay.diff'), patch);
+    fs.writeFileSync(path.join(root, 'patches', '2026-05-17-auth-delay.diff'), downstreamPatch);
     const config = loadConfig(root);
     const upgrade = loadUpgrades(root)[0];
     const result = applyUpgrade(config.projects[0], upgrade, config, root);
     assert.equal(result.patch.applied, true, 'patch should apply to downstream project');
     assert.ok(!fs.existsSync(path.join(project, notePath)), 'upgrade note should NOT be present in downstream project');
+    assert.ok(!fs.readFileSync(path.join(project, '.nestled', 'upgrade-log.yaml'), 'utf8').includes('template-log: true'));
   }
 });
 

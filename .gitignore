@@ -7,3 +7,4 @@ upgrader.state.yaml
 upgrades/
 patches/
 reports/
+.claude/**
