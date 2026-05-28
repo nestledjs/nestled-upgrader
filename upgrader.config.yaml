@@ -1,0 +1,97 @@
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: develop
+discover:
+  exclude:
+    - nestled-dev-template
+    - nestled-template
+    - nestled
+    - nestled-forms
+    - nestledforms.com
+    - nestledjs.com
+    - mi-core-upgrade-mcp
+    - muzebook-upgrade-mcp
+    - qalatra.com-upgrade-mcp
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: develop
+    role: template-promotion
+    autoPR: true
+    rawPatchExcludes:
+      - package.json
+      - pnpm-lock.yaml
+      - package-lock.json
+      - yarn.lock
+      - libs/data-browser/**
+      - libs/shared-components/**
+      - README.md
+      - CLAUDE.md
+      - WARP.md
+      - SONARCLOUD_SETUP.md
+      - docs/template/**
+      - docs/dev/**
+      - sonar-project.properties
+    forkedAreas: []
+    verification: []
+  - name: biztobiz
+    path: ../biztobiz
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: cashcast
+    path: ../cashcast
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: flightdesk
+    path: ../flightdesk
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: mi-core
+    path: ../mi-core
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: moceanic-ai
+    path: ../moceanic-ai
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: muzebook
+    path: ../muzebook
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: qalatra.com
+    path: ../qalatra.com
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
+  - name: travel-outlook
+    path: ../travel-outlook
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
