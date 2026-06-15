@@ -9,9 +9,17 @@
 // upgrades baked into a clone's baseline never get logged, and direct pushes
 // sometimes skip the log. This tool reconciles ledger vs catalog vs actual code.
 //
+// SOURCE OF TRUTH: report mode reads the ledger AND the code signatures from a git
+// ref (default origin/develop), so the answer is the same no matter which branch a
+// repo happens to be checked out on. --fix operates on the working tree, because you
+// can only commit what's checked out.
+//
 // Usage:
-//   node bin/currency-check.mjs            # read-only report -> stdout + reports/currency.md
-//   node bin/currency-check.mjs --fix      # backfill present + n/a entries into each log
+//   node bin/currency-check.mjs                 # report against origin/develop
+//   node bin/currency-check.mjs --fetch         # git fetch origin first, then report
+//   node bin/currency-check.mjs --ref main      # report against a different ref
+//   node bin/currency-check.mjs --worktree      # report against the local working tree
+//   node bin/currency-check.mjs --fix           # backfill present + n/a into the WORKING TREE
 //
 // Each catalog upgrade missing from a repo's log is classified by a code-signature
 // detector into one of:
@@ -21,36 +29,66 @@
 //
 // --fix writes present (status: applied) and na (status: not-applicable) entries
 // with a note carrying the detector's reasoning. It never stamps "review" entries.
-// It does NOT commit — it leaves working-tree changes for you to inspect and push.
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const FIX = process.argv.includes('--fix');
+const argv = process.argv.slice(2);
+const FIX = argv.includes('--fix');
+const FETCH = argv.includes('--fetch');
+// --fix must read the working tree (it writes there). Otherwise default to the ref
+// unless --worktree is explicitly requested.
+const USE_WORKTREE = FIX || argv.includes('--worktree');
+const refArgIdx = argv.indexOf('--ref');
+const REF = refArgIdx !== -1 && argv[refArgIdx + 1] ? argv[refArgIdx + 1] : 'origin/develop';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UPGRADES_DIR = path.join(ROOT, 'upgrades');
 const CONFIG = path.join(ROOT, 'upgrader.config.yaml');
-const TEMPLATE_LANDING = path.resolve(ROOT, '../nestled-template/apps/web/app/routes/_public/_index.tsx');
+const TEMPLATE_DIR = path.resolve(ROOT, '../nestled-template');
 const STAMP = new Date().toISOString();
 
-// ---- tiny helpers (no YAML dep; formats here are simple + uniform) ----
+// ---- file access: working tree vs git ref ----
+// In report mode these resolve against REF (e.g. origin/develop) via `git show`,
+// so the checked-out branch is irrelevant. In --fix/--worktree mode they hit disk.
 
 function readFileSafe(p) {
   try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
 }
-
-function dirHasFiles(p) {
-  try { return fs.readdirSync(p).length > 0; } catch { return false; }
+function gitShow(dir, rel) {
+  const r = spawnSync('git', ['-C', dir, 'show', `${REF}:${rel}`], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout : null;
+}
+function gitExists(dir, rel) {
+  return spawnSync('git', ['-C', dir, 'cat-file', '-e', `${REF}:${rel}`]).status === 0;
+}
+function gitListDir(dir, rel) {
+  const r = spawnSync('git', ['-C', dir, 'ls-tree', '--name-only', `${REF}:${rel}`], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.split('\n').filter(Boolean) : [];
 }
 
-// Pull a top-level scalar like `priority: ignore` from an upgrade def.
+// Unified accessors honoring the chosen source.
+function readPath(dir, rel) {
+  return USE_WORKTREE ? readFileSafe(path.join(dir, rel)) : gitShow(dir, rel);
+}
+function pathExists(dir, rel) {
+  return USE_WORKTREE ? fs.existsSync(path.join(dir, rel)) : gitExists(dir, rel);
+}
+function dirHasFiles(dir, rel) {
+  if (!USE_WORKTREE) return gitListDir(dir, rel).length > 0;
+  try { return fs.readdirSync(path.join(dir, rel)).length > 0; } catch { return false; }
+}
+
+// ---- catalog + project + ledger parsing (no YAML dep; formats are simple/uniform) ----
+
 function scalar(text, key) {
   const m = text.match(new RegExp(`^${key}:\\s*(.+?)\\s*$`, 'm'));
   return m ? m[1].replace(/^['"]|['"]$/g, '') : null;
 }
 
-// The catalog: every upgrade id + its priority.
+// The catalog lives in the upgrader's own checkout — always read from disk.
 function loadCatalog() {
   return fs.readdirSync(UPGRADES_DIR)
     .filter((f) => f.endsWith('.yaml'))
@@ -62,7 +100,7 @@ function loadCatalog() {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-// Parse the project list out of upgrader.config.yaml (name + path under projects:).
+// Project list from upgrader.config.yaml (the upgrader's own checkout).
 function loadProjects() {
   const text = readFileSafe(CONFIG) || '';
   const lines = text.split('\n');
@@ -71,24 +109,24 @@ function loadProjects() {
   let cur = null;
   for (const line of lines) {
     if (/^projects:\s*$/.test(line)) { inProjects = true; continue; }
-    if (inProjects && /^\S/.test(line)) break; // left the projects block
+    if (inProjects && /^\S/.test(line)) break;
     if (!inProjects) continue;
     const name = line.match(/^\s+-\s+name:\s*(.+?)\s*$/);
     if (name) { cur = { name: name[1], path: null }; out.push(cur); continue; }
     const p = line.match(/^\s+path:\s*(.+?)\s*$/);
     if (p && cur) cur.path = p[1];
   }
-  // Resolve paths relative to the upgrader root; drop the template-promotion entry.
   return out
     .filter((p) => p.name !== 'nestled-template')
     .map((p) => ({ name: p.name, dir: path.resolve(ROOT, p.path || `../${p.name}`) }));
 }
 
-// Read the set of logged upgrade ids (and statuses) from a repo's log.
+// Read the set of logged upgrade ids (and statuses) from a repo's ledger.
 function loadLog(dir) {
-  const p = path.join(dir, '.nestled', 'upgrade-log.yaml');
-  const text = readFileSafe(p);
-  if (text === null) return { path: p, exists: false, ids: new Map(), upgradesIsLast: false };
+  const rel = '.nestled/upgrade-log.yaml';
+  const text = readPath(dir, rel);
+  const diskPath = path.join(dir, rel);
+  if (text === null) return { path: diskPath, exists: false, ids: new Map(), upgradesIsLast: false };
   const ids = new Map();
   const lines = text.split('\n');
   let inUpg = false;
@@ -97,31 +135,29 @@ function loadLog(dir) {
   for (const line of lines) {
     if (/^upgrades:\s*$/.test(line)) { inUpg = true; continue; }
     if (!inUpg) continue;
-    if (/^\S/.test(line) && line.trim() !== '') { lastTopAfterUpg = true; continue; } // another top-level block
+    if (/^\S/.test(line) && line.trim() !== '') { lastTopAfterUpg = true; continue; }
     const idm = line.match(/^ {2}([^\s:][^:]*):\s*$/);
     if (idm) { curId = idm[1]; ids.set(curId, '?'); continue; }
     const st = line.match(/^ {4}status:\s*(.+?)\s*$/);
     if (st && curId) ids.set(curId, st[1].replace(/^['"]|['"]$/g, ''));
   }
-  return { path: p, exists: true, ids, upgradesIsLast: !lastTopAfterUpg };
+  return { path: diskPath, exists: true, ids, upgradesIsLast: !lastTopAfterUpg };
 }
 
 // ---- code-signature detectors ----
-// Keyed by upgrade id. Each returns { kind: 'present'|'na'|'review', detail }.
-// Signatures below were verified by hand on 2026-06-14 against the live repos.
+// Each returns { kind: 'present'|'na'|'review', detail }. File reads go through
+// readPath/pathExists so report mode sees REF and --fix sees the working tree.
 const DETECTORS = {
-  // Security: failed-login delay jitter must source from a CSPRNG (crypto.randomInt).
   '2026-05-17-auth-delay-csprng': (dir) => {
-    const f = readFileSafe(path.join(dir, 'libs/api/custom/src/lib/plugins/auth/auth.service.ts'));
+    const f = readPath(dir, 'libs/api/custom/src/lib/plugins/auth/auth.service.ts');
     if (f === null) return { kind: 'review', detail: 'auth.service.ts not found' };
     return /randomInt/.test(f)
       ? { kind: 'present', detail: 'auth delay uses crypto randomInt' }
       : { kind: 'review', detail: 'auth delay still Math.random — real gap' };
   },
 
-  // Toolchain bump: @nestledjs/api pinned to >= 2.10 in pnpm.overrides.
   '2026-06-10-bump-api-2-10-0-clone-identity': (dir) => {
-    const f = readFileSafe(path.join(dir, 'package.json'));
+    const f = readPath(dir, 'package.json');
     const m = f && f.match(/"@nestledjs\/api":\s*"\^?(\d+)\.(\d+)\.\d+"/);
     if (!m) return { kind: 'review', detail: '@nestledjs/api version not found' };
     const ok = Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 10);
@@ -133,10 +169,10 @@ const DETECTORS = {
   // @nestledjs/shared is NOT a direct dependency — only a pnpm.overrides pin on a
   // transitive dep of @nestledjs/generators. generators@0.2.32 (uniform fleet-wide)
   // is compatible with both shared 1.0.2 and 1.0.3, and shared only affects SDK
-  // codegen (nx g @nestledjs/shared:sdk), not shipped code. Not worth a standalone
-  // PR sweep; fold the override bump into the next generators/api upgrade.
+  // codegen (nx g @nestledjs/shared:sdk), not shipped code. Defer the override bump
+  // to the next generators/api upgrade.
   '2026-05-28-bump-generators-296': (dir) => {
-    const f = readFileSafe(path.join(dir, 'package.json'));
+    const f = readPath(dir, 'package.json');
     const m = f && f.match(/"@nestledjs\/shared":\s*"\^?(\d+)\.(\d+)\.(\d+)"/);
     const cur = m ? `${m[1]}.${m[2]}.${m[3]}` : 'unpinned';
     const at103 = m && (Number(m[1]) > 1 || (Number(m[1]) === 1 && (Number(m[2]) > 0 || Number(m[3]) >= 3)));
@@ -145,11 +181,8 @@ const DETECTORS = {
       : { kind: 'na', detail: `@nestledjs/shared override ${cur}: transitive codegen pin, compatible with generators 0.2.32 — defer to next generators bump` };
   },
 
-  // CI toolchain lock: drop the conflicting pnpm/action-setup version, pin Node exactly.
-  // Intent (no duplicate pnpm version + exact Node pin) is met even though Node later
-  // moved 22.14.0 -> 22.22.1 via the node-engines-ci-22-22 upgrade.
   '2026-05-17-ci-toolchain-lock': (dir) => {
-    const ci = readFileSafe(path.join(dir, '.github/workflows/ci.yml'));
+    const ci = readPath(dir, '.github/workflows/ci.yml');
     if (ci === null) return { kind: 'na', detail: 'no template GitHub Actions workflow (skipIf)' };
     const pnpmPinned = /action-setup[\s\S]{0,120}?\n\s*version:\s*[\d.]+/.test(ci);
     const nodeExact = /node-version:\s*['"]?\d+\.\d+\.\d+/.test(ci);
@@ -158,24 +191,18 @@ const DETECTORS = {
       : { kind: 'review', detail: `ci.yml toolchain not locked (pnpmPinned=${pnpmPinned} nodeExact=${nodeExact})` };
   },
 
-  // Public landing cleanup: only relevant to repos still shipping the template's
-  // default public landing. Repos with no _public/_index.tsx, or a customized one,
-  // are N/A by the upgrade's own skipIf.
   '2026-05-17-public-landing-cleanup': (dir) => {
-    const f = path.join(dir, 'apps/web/app/routes/_public/_index.tsx');
-    if (!fs.existsSync(f)) return { kind: 'na', detail: 'no _public/_index.tsx — no template public landing to clean' };
-    const a = readFileSafe(f);
-    const b = readFileSafe(TEMPLATE_LANDING);
+    const rel = 'apps/web/app/routes/_public/_index.tsx';
+    if (!pathExists(dir, rel)) return { kind: 'na', detail: 'no _public/_index.tsx — no template public landing to clean' };
+    const a = readPath(dir, rel);
+    const b = readPath(TEMPLATE_DIR, rel);
     if (b !== null && a === b) return { kind: 'present', detail: 'public landing matches cleaned template' };
     return { kind: 'na', detail: 'repo owns a custom public landing (skipIf)' };
   },
 
-  // API tokens / MCP RBAC: the behavioral signature is the list_organizations fix in
-  // the MCP organization tool. Repos without settings routes AND without that tool
-  // simply don't carry the feature surface (e.g. mi-core's Monroe frontend).
   '2026-05-25-api-tokens-mcp-setup-and-rbac': (dir) => {
-    const org = readFileSafe(path.join(dir, 'libs/api/custom/src/lib/plugins/mcp/tools/organization.ts'));
-    const hasSettings = dirHasFiles(path.join(dir, 'apps/web/app/routes/settings'));
+    const org = readPath(dir, 'libs/api/custom/src/lib/plugins/mcp/tools/organization.ts');
+    const hasSettings = dirHasFiles(dir, 'apps/web/app/routes/settings');
     if (org === null && !hasSettings) return { kind: 'na', detail: 'no settings routes and no MCP organization tool — feature surface absent' };
     if (org !== null) {
       const ok = /organizationMember\.findMany/.test(org) && /!auth\.organizationId/.test(org);
@@ -187,9 +214,6 @@ const DETECTORS = {
   },
 };
 
-// "Template changes <sha>-to-<sha>" range records are template-internal bookkeeping —
-// the upgrader extracts discrete upgrades from them, so a missing range record is not
-// a downstream gap. Treat as not-applicable.
 const RANGE_RECORD = /\b[0-9a-f]{7}-to-[0-9a-f]{7}\b/;
 
 function classify(upg, dir) {
@@ -200,7 +224,7 @@ function classify(upg, dir) {
   return { kind: 'review', detail: 'no detector; verify against affectedPaths' };
 }
 
-// ---- backfill writer: append entries under the (last) upgrades: block ----
+// ---- backfill writer (working tree only) ----
 function backfill(log, entries) {
   if (!entries.length) return 0;
   if (!log.upgradesIsLast) {
@@ -208,6 +232,7 @@ function backfill(log, entries) {
     return 0;
   }
   let text = readFileSafe(log.path);
+  if (text === null) { console.error(`  ! ${log.path}: not found on disk — skipping`); return 0; }
   if (!text.endsWith('\n')) text += '\n';
   const block = entries.map((e) => {
     const status = e.kind === 'na' ? 'not-applicable' : 'applied';
@@ -223,13 +248,20 @@ function backfill(log, entries) {
 }
 
 // ---- run ----
-const catalog = loadCatalog();
 const projects = loadProjects();
+
+if (FETCH && !USE_WORKTREE) {
+  process.stderr.write(`Fetching origin for ${projects.length} repos...\n`);
+  for (const p of projects) spawnSync('git', ['-C', p.dir, 'fetch', 'origin', '--quiet']);
+}
+
+const catalog = loadCatalog();
+const source = USE_WORKTREE ? 'working tree' : REF;
 const report = [];
 report.push(`# Nestled upgrade currency report`);
 report.push(``);
 report.push(`Generated: ${STAMP}`);
-report.push(`Catalog: ${catalog.length} upgrades | Projects: ${projects.length}${FIX ? ' | MODE: --fix' : ''}`);
+report.push(`Source: ${source}${FETCH && !USE_WORKTREE ? ' (fetched)' : ''} | Catalog: ${catalog.length} upgrades | Projects: ${projects.length}${FIX ? ' | MODE: --fix' : ''}`);
 report.push(``);
 
 let totalReview = 0;
@@ -239,7 +271,6 @@ const reviewByRepo = {};
 for (const proj of projects) {
   const log = loadLog(proj.dir);
   const missing = catalog.filter((u) => !log.ids.has(u.id));
-  // applied-but-not-in-catalog: ledger entries with no catalog def (catalog drift)
   const orphan = [...log.ids.keys()].filter((id) => !catalog.some((u) => u.id === id));
 
   const buckets = { na: [], present: [], review: [] };
@@ -251,7 +282,7 @@ for (const proj of projects) {
   if (buckets.review.length) reviewByRepo[proj.name] = buckets.review;
 
   report.push(`## ${proj.name}`);
-  if (!log.exists) { report.push(`- ⚠️ no upgrade-log.yaml found at ${log.path}`); report.push(``); continue; }
+  if (!log.exists) { report.push(`- ⚠️ no upgrade-log.yaml on ${source}`); report.push(``); continue; }
   report.push(`- logged: ${log.ids.size} | missing: ${missing.length} (na:${buckets.na.length} present:${buckets.present.length} **review:${buckets.review.length}**)`);
   if (orphan.length) report.push(`- applied-but-not-in-catalog (catalog drift): ${orphan.join(', ')}`);
   for (const e of buckets.review) report.push(`  - 🔍 REVIEW \`${e.id}\` — ${e.detail}`);
@@ -259,8 +290,7 @@ for (const proj of projects) {
   for (const e of buckets.na) report.push(`  - ➖ n/a \`${e.id}\` — ${e.detail}`);
 
   if (FIX) {
-    const toWrite = [...buckets.na, ...buckets.present];
-    const n = backfill(log, toWrite);
+    const n = backfill(log, [...buckets.na, ...buckets.present]);
     totalBackfilled += n;
     if (n) report.push(`  - 📝 backfilled ${n} entries into the log`);
   }
