@@ -497,6 +497,97 @@ projects:
   assert.equal(upgrades.find((upgrade) => upgrade.id === downstreamPlans[0].upgrade).sourceRepo, 'nestled-template');
 });
 
+test('a note id promoted to the template still yields a downstream-eligible record', () => {
+  // Regression: promotion used to grab the unscoped upgrades/<id>.yaml slot, so
+  // downstream sync skipped creating its own nestled-template-sourced record and
+  // the fix never reached product projects. Promotion records are now source-scoped.
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-collision-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  const project = path.join(parent, 'project-a');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(path.join(project, 'package.json'), '{}');
+  for (const repo of [devTemplate, template]) {
+    fs.mkdirSync(path.join(repo, '.nestled-updates', 'upgrade-notes'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'README.md'), 'one\n');
+    git(repo, ['init']);
+    git(repo, ['config', 'user.email', 'test@example.com']);
+    git(repo, ['config', 'user.name', 'Test User']);
+    git(repo, ['config', 'commit.gpgsign', 'false']);
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'initial']);
+  }
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+  - name: project-a
+    path: ../project-a
+    defaultBranch: main
+    forkedAreas: []
+    verification: []
+`);
+  const config = loadConfig(root);
+  // Baseline both pipelines at the initial commit.
+  promoteTemplate(config, root, { dryRun: true });
+  syncTemplate(config, root);
+
+  // The identical upgrade note lands in BOTH the dev template and the template.
+  const note = [
+    'id: 2026-06-21-shared-fix',
+    'title: Shared fix',
+    'priority: normal',
+    'area: web',
+    'type: correctness',
+    'delivery: code-patch',
+    'intent: Apply the shared fix.',
+    'affectedPaths:',
+    '  - README.md',
+    'verification: []',
+    ''
+  ].join('\n');
+  for (const repo of [devTemplate, template]) {
+    fs.writeFileSync(path.join(repo, '.nestled-updates', 'upgrade-notes', '2026-06-21-shared-fix.yaml'), note);
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'add shared-fix note']);
+  }
+
+  // Promotion runs first (as in the real workflow), then downstream sync.
+  promoteTemplate(config, root, { dryRun: true });
+  syncTemplate(config, root);
+  const upgrades = loadUpgrades(root);
+
+  const promotionRecord = upgrades.find(
+    (u) => u.id === '2026-06-21-shared-fix' && u.sourceRepo === 'nestled-dev-template'
+  );
+  const downstreamRecord = upgrades.find(
+    (u) => u.id === '2026-06-21-shared-fix' && u.sourceRepo === 'nestled-template'
+  );
+  assert.ok(promotionRecord, 'promotion record should exist');
+  assert.ok(downstreamRecord, 'downstream-eligible record must exist for the shared note id');
+
+  const plans = planAll(config, upgrades, root);
+  assert.ok(
+    plans.some((p) => p.project === 'project-a' && p.upgrade === '2026-06-21-shared-fix'),
+    'product project must be planned against the shared note upgrade'
+  );
+});
+
 test('run workflow is safe on first run with no template delta', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
   const root = path.join(parent, 'nestled-upgrader');
