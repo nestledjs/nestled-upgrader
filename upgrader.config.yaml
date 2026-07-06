@@ -95,3 +95,10 @@ projects:
     verification:
       - pnpm lint
       - pnpm test
+  - name: silvermouselive
+    path: ../silvermouselive
+    defaultBranch: develop
+    forkedAreas: []
+    verification:
+      - pnpm lint
+      - pnpm test
