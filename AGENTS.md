@@ -12,7 +12,7 @@ To inspect or run template promotion by itself:
 node bin/nestled-upgrader.js promote-template
 ```
 
-Template promotion uses separate promotion state and applies allowed dev-template changes into `nestled-template`, excluding raw `package.json`, lockfile, and package-source changes such as `libs/data-browser/**` and `libs/shared-components/**`. Package changes must flow through `packageReleases` dependency bumps, not copied source.
+Template promotion is an **import-aware file mirror**, not a patch apply: it copies `nestled-dev-template`'s product surface into `nestled-template` and never blocks on conflicts. It excludes the imported-vs-embedded wiring (`package.json`, lockfiles, `nx.json`, `tsconfig.base.json`, `libs/data-browser/**`, `libs/shared-components/**`), template-owned docs/identity (`README.md`, `CLAUDE.md`, `WARP.md`, `AGENTS.md`, sonar, `docs/template/**`, `docs/dev/**`), and dev-authoring tooling (`.cursor/**`, `.agents/**`, `ai-docs/**`, `plans/**`, `tools/ai-migrations/**`, …). It substitutes the two seams that differ per clone: the `@nestled-template/data-browser` import becomes the `@nestledjs/data-browser` package, and the Compose project `name:` becomes `nestled-template`. Package versions still flow through `packageReleases` dependency bumps (handled separately), not copied source. The mirror is additive — it never deletes; template-only files are reported, not removed. Review `reports/promotion-mirror.md`, then commit the mirrored changes in `nestled-template` (it does not auto-commit product code). Because it mirrors dev-template's committed state, fixes must originate in `nestled-dev-template` and flow down — never patch `nestled-template` directly.
 
 Run this workflow from the repository root:
 

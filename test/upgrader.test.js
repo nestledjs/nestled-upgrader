@@ -10,6 +10,7 @@ import {
   initializeAllLogs,
   loadConfig,
   loadUpgrades,
+  mirrorTemplateFromSource,
   planAll,
   promoteTemplate,
   readUpgradeLog,
@@ -1071,6 +1072,85 @@ projects:
     assert.ok(!fs.existsSync(path.join(project, notePath)), 'upgrade note should NOT be present in downstream project');
     assert.ok(!fs.readFileSync(path.join(project, '.nestled', 'upgrade-log.yaml'), 'utf8').includes('template-log: true'));
   }
+});
+
+test('mirrorTemplateFromSource copies product files, applies seam substitutions, excludes wiring/tooling, keeps template-only', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-mirror-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(devTemplate, { recursive: true });
+  fs.mkdirSync(template, { recursive: true });
+
+  const write = (repo, rel, content) => {
+    const abs = path.join(repo, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  };
+
+  // dev-template: product files (two carry the imported-vs-embedded seam) + excluded wiring/tooling
+  write(devTemplate, 'apps/api/src/service.ts', 'export const svc = 1\n');
+  write(devTemplate, 'apps/web/routes/data.tsx', "import { X } from '@nestled-template/data-browser'\n");
+  write(devTemplate, '.dev/docker-compose.yml', 'name: nestled-dev-template\nservices: {}\n');
+  write(devTemplate, 'nx.json', '{ "release": {} }\n');
+  write(devTemplate, 'libs/data-browser/src/index.ts', 'export const v = 1\n');
+  write(devTemplate, '.cursor/skills/foo.md', 'authoring\n');
+  write(devTemplate, '.nestled-updates/upgrade-notes/n.yaml', 'id: n\n');
+
+  // template: a stale copy of a product file, plus files unique to the template that must survive
+  write(template, 'apps/api/src/service.ts', 'export const svc = 0\n');
+  write(template, 'apps/web/routes/only-here.tsx', 'export default 1\n');
+  write(template, '.nestled/upgrade-log.yaml', 'upgrades: {}\n');
+
+  for (const repo of [devTemplate, template]) {
+    git(repo, ['init']);
+    git(repo, ['config', 'user.email', 'test@example.com']);
+    git(repo, ['config', 'user.name', 'Test User']);
+    git(repo, ['config', 'commit.gpgsign', 'false']);
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-m', 'initial']);
+  }
+
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+`);
+  const config = loadConfig(root);
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+  const read = (rel) => fs.readFileSync(path.join(template, rel), 'utf8');
+
+  // plain product file mirrored; note mirrored
+  assert.equal(read('apps/api/src/service.ts'), 'export const svc = 1\n');
+  assert.ok(fs.existsSync(path.join(template, '.nestled-updates/upgrade-notes/n.yaml')));
+  // seam substitutions applied on the way in
+  assert.equal(read('apps/web/routes/data.tsx'), "import { X } from '@nestledjs/data-browser'\n");
+  assert.equal(read('.dev/docker-compose.yml'), 'name: nestled-template\nservices: {}\n');
+  // excluded wiring / embedded lib / dev tooling NOT mirrored
+  assert.ok(!fs.existsSync(path.join(template, 'nx.json')));
+  assert.ok(!fs.existsSync(path.join(template, 'libs/data-browser/src/index.ts')));
+  assert.ok(!fs.existsSync(path.join(template, '.cursor/skills/foo.md')));
+  // template-only files preserved (never deleted); product one is reported, excluded log is not
+  assert.equal(read('apps/web/routes/only-here.tsx'), 'export default 1\n');
+  assert.equal(read('.nestled/upgrade-log.yaml'), 'upgrades: {}\n');
+  assert.ok(result.templateOnly.includes('apps/web/routes/only-here.tsx'));
+  assert.ok(!result.templateOnly.includes('.nestled/upgrade-log.yaml'));
+  // change kinds recorded
+  assert.ok(result.changes.some((c) => c.path === 'apps/api/src/service.ts' && c.kind === 'modified'));
+  assert.ok(result.changes.some((c) => c.path === '.nestled-updates/upgrade-notes/n.yaml' && c.kind === 'new'));
 });
 
 function git(cwd, args) {

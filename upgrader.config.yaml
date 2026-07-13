@@ -2,6 +2,18 @@ promotion:
   source:
     name: nestled-dev-template
     path: ../nestled-dev-template
+  # promote-template does an import-aware file mirror of the source's product surface into
+  # nestled-template (never a blocking patch apply). Built-in defaults already exclude the
+  # imported-vs-embedded wiring (package.json, lockfiles, nx.json, tsconfig.base.json,
+  # libs/data-browser, libs/shared-components), template-owned docs/identity (README, CLAUDE,
+  # WARP, AGENTS, sonar, docs/template, docs/dev), and dev-authoring tooling (.cursor, .agents,
+  # ai-docs, plans, tools/ai-migrations, …); and substitute the data-browser package import and
+  # the Compose project name. Extend those here (additive):
+  mirror:
+    excludePaths: []
+    substitutions: []
+    #   - find: "@nestled-template/something"
+    #     replace: "@nestledjs/something"
 template:
   name: nestled-template
   path: ../nestled-template

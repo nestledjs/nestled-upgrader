@@ -41,18 +41,19 @@ node bin/nestled-upgrader.js promote-template --dry-run
 node bin/nestled-upgrader.js promote-template
 ```
 
-Promotion reads from `promotion.source` in `upgrader.config.yaml`, currently `../nestled-dev-template`.
+Promotion reads from `promotion.source` in `upgrader.config.yaml`, currently `../nestled-dev-template`, and writes to the project with `role: template-promotion`, currently `../nestled-template`.
 
-Promotion applies to the project with `role: template-promotion`, currently `../nestled-template`.
+Promotion is an **import-aware file mirror**, not a patch apply, so it never blocks on conflicts. It copies every tracked source file from `nestled-dev-template` into `nestled-template` except:
 
-Promotion excludes raw changes to:
+- imported-vs-embedded wiring: `package.json`, lockfiles, `nx.json`, `tsconfig.base.json`, `libs/data-browser/**`, `libs/shared-components/**`
+- template-owned docs/identity: `README.md`, `CLAUDE.md`, `WARP.md`, `AGENTS.md`, `sonar-project.properties`, `docs/template/**`, `docs/dev/**`
+- dev-authoring tooling the cloneable template never carries: `.cursor/**`, `.agents/**`, `.opencode/**`, `ai-docs/**`, `plans/**`, `tools/ai-migrations/**`, …
 
-- `package.json`
-- lockfiles
-- `libs/data-browser/**`
-- `libs/shared-components/**`
+On the way in it rewrites the two per-clone seams: `@nestled-template/data-browser` → the `@nestledjs/data-browser` package, and the Compose project `name:` → `nestled-template`. Extend the exclude/substitution sets under `promotion.mirror` in `upgrader.config.yaml`.
 
-If a promotion upgrade only touches excluded paths, the upgrader blocks it. That usually means the upgrade note needs `delivery: package-release` or `delivery: hybrid`, or a human/agent needs to decide the clone-template-specific manifest change.
+The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` (its own upgrade log, template-only notes) are preserved and listed under "Template-only files" in the report. Package versions still flow through `packageReleases` dependency bumps, handled separately, not copied source.
+
+Because promotion mirrors dev-template's committed state, any fix must originate in `nestled-dev-template` and flow down — do not patch `nestled-template` directly, or the next promotion will revert it. Review `reports/promotion-mirror.md`, then commit the mirrored working-tree changes in `nestled-template` (product code is not auto-committed).
 
 ## Downstream Only
 
