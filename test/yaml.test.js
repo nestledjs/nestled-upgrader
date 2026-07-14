@@ -64,3 +64,31 @@ agentHints:
     'Keep the second item unchanged.'
   ]);
 });
+
+test('double-quoted scalars round-trip without compounding backslashes', () => {
+  // Regression: parseScalar() sliced quotes without unescaping while formatScalar() escapes via
+  // JSON.stringify, so every read-modify-write doubled every backslash (`\n` -> `\\n` -> `\\\\n`),
+  // progressively corrupting `notes:` in .nestled/upgrade-log.yaml on each upgrader run.
+  const source = 'notes: "error: patch failed\\nerror: does not apply"\n';
+  const parsed = parseYaml(source);
+  assert.equal(parsed.notes, 'error: patch failed\nerror: does not apply');
+
+  let current = source;
+  for (let i = 0; i < 3; i += 1) current = stringifyYaml(parseYaml(current));
+  assert.equal(current, source, 'round-trip must be idempotent');
+});
+
+test('parses block scalars with chomping indicators', () => {
+  // Regression: only bare `>` and `|` were matched, so the common `>-` / `|-` forms threw
+  // "Unexpected YAML indentation" and crashed the tool on hand-written upgrade-log entries.
+  for (const indicator of ['>', '>-', '>+']) {
+    assert.equal(parseYaml(`notes: ${indicator}\n  hello\n  world\n`).notes, 'hello world');
+  }
+  for (const indicator of ['|', '|-', '|+']) {
+    assert.equal(parseYaml(`notes: ${indicator}\n  hello\n  world\n`).notes, 'hello\nworld');
+  }
+});
+
+test('single-quoted scalars unescape doubled quotes', () => {
+  assert.equal(parseYaml("notes: 'it''s fine'\n").notes, "it's fine");
+});
