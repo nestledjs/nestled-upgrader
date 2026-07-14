@@ -92,3 +92,26 @@ test('parses block scalars with chomping indicators', () => {
 test('single-quoted scalars unescape doubled quotes', () => {
   assert.equal(parseYaml("notes: 'it''s fine'\n").notes, "it's fine");
 });
+
+test('quotes scalars starting with YAML reserved indicators', () => {
+  // Regression: needsQuoting() ignored leading indicator characters, so a value like
+  // "@nestledjs/generators ..." was emitted unquoted. Our lenient parser read it back fine, but
+  // strict YAML parsers reject it (BAD_SCALAR_START), breaking third-party tooling that reads
+  // .nestled/upgrade-log.yaml.
+  const values = {
+    at: '@nestledjs/generators 1.1.3 satisfies >=1.1.2.',
+    star: '*star',
+    bang: '!bang',
+    anchor: '&anchor',
+    percent: '%pct',
+    tick: '`tick',
+    plain: 'normal value',
+    midString: 'has >= mid-string ok'
+  };
+  const emitted = stringifyYaml(values);
+  assert.match(emitted, /^at: "@nestledjs/m, 'leading @ must be quoted');
+  assert.match(emitted, /^star: "\*star"$/m);
+  assert.match(emitted, /^plain: normal value$/m, 'safe plain scalars stay unquoted');
+  assert.match(emitted, /^midString: has >= mid-string ok$/m, 'indicators mid-string are fine');
+  assert.deepEqual(parseYaml(emitted), values, 'round-trip must be lossless');
+});
