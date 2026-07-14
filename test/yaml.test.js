@@ -115,3 +115,28 @@ test('quotes scalars starting with YAML reserved indicators', () => {
   assert.match(emitted, /^midString: has >= mid-string ok$/m, 'indicators mid-string are fine');
   assert.deepEqual(parseYaml(emitted), values, 'round-trip must be lossless');
 });
+
+test('does not strip # inside block scalars', () => {
+  // Regression: stripComment() ran on every line, including block-scalar bodies, so literal text
+  // was silently truncated at the first `#`. A real upgrade-log note reading
+  // "stripped the ## Downstream Upgrade Notes block" lost everything from the `#` onward.
+  // Silent truncation is worse than the parse error that block-scalar support replaced.
+  const parsed = parseYaml(
+    'notes: >-\n' +
+      '  removed the section via the doctor regex\n' +
+      '  (also stripped the ## Downstream Upgrade Notes block, which lacked a boundary)\n' +
+      '  and preserved the final newline.\n' +
+      'status: adapted\n'
+  );
+  assert.match(parsed.notes, /## Downstream Upgrade Notes/);
+  assert.equal(parsed.status, 'adapted', 'a dedent must end the block scalar');
+
+  // Literal blocks too — verification commands routinely contain `#`.
+  assert.equal(parseYaml('cmd: |\n  grep -n "## Header" file\n  echo done\n').cmd, 'grep -n "## Header" file\necho done');
+});
+
+test('still strips real comments outside block scalars', () => {
+  const parsed = parseYaml('name: value # trailing comment\n# whole-line comment\nother: x\n');
+  assert.equal(parsed.name, 'value');
+  assert.equal(parsed.other, 'x');
+});
