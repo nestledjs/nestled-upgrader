@@ -53,7 +53,26 @@ On the way in it rewrites the two per-clone seams: `@nestled-template/data-brows
 
 The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` (its own upgrade log, template-only notes) are preserved and listed under "Template-only files" in the report. Package versions still flow through `packageReleases` dependency bumps, handled separately, not copied source.
 
-Because promotion mirrors dev-template's committed state, any fix must originate in `nestled-dev-template` and flow down — do not patch `nestled-template` directly, or the next promotion will revert it. Review `reports/promotion-mirror.md`, then commit the mirrored working-tree changes in `nestled-template` (product code is not auto-committed).
+Because promotion mirrors dev-template's committed state, any fix must originate in `nestled-dev-template` and flow down — do not patch `nestled-template` directly, or the next promotion will revert it.
+
+### Committing a promotion
+
+**Promotion never commits.** It writes to the `nestled-template` working tree, writes `reports/promotion-mirror.md`, and stops. Committing is a review step, not a tool step:
+
+```bash
+cd ../nestled-template
+git switch -c chore/promote-<topic>       # never commit straight onto develop
+git add -A && git commit                  # write the message yourself
+gh pr create --base develop
+```
+
+Write the message from the report, not from the package bumps. A single promotion routinely carries product files, new upgrade notes, and dependency bumps at once, and the interesting part is usually in the notes — e.g. "go straight to forms 0.8.2, skip 0.8.1" is a fact you can only get by reading them.
+
+This used to be automatic and it went wrong in a way worth remembering: the package-version step ran `git add -A` and committed the entire tree — mirror, notes, and any unrelated work in progress — under a generated message naming only the bumped packages, straight onto whichever branch was checked out. The commit claimed to be a version bump while carrying 26 files. Nothing verified it, because it happened before anyone read the report.
+
+Promotion also refuses to run against a dirty template. `--allow-dirty` is safe when your only local edits are ones the mirror excludes anyway (`package.json`, lockfiles); otherwise commit or stash first.
+
+After a promotion is merged, re-running promotion should report no changes. If it doesn't, something was patched directly in `nestled-template`.
 
 ## Downstream Only
 

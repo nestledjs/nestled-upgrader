@@ -959,6 +959,62 @@ projects:
   assert.ok(Array.isArray(result.packageSync.updates));
 });
 
+test('promoteTemplate leaves its changes uncommitted', () => {
+  // Regression: syncPackageVersions() called commitPackageSync(), which ran `git add -A` and
+  // committed the entire working tree under a message naming only the package bumps. One promotion
+  // produced a single commit carrying the whole mirror plus any unrelated work in progress,
+  // labelled as a version bump, on whatever branch happened to be checked out. Promotion writes
+  // and reports; the reviewer commits.
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-promote-nocommit-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(devTemplate, { recursive: true });
+  fs.mkdirSync(template, { recursive: true });
+  fs.writeFileSync(path.join(devTemplate, 'README.md'), 'dev\n');
+  fs.writeFileSync(path.join(devTemplate, 'app.txt'), 'mirrored product file\n');
+  fs.writeFileSync(path.join(devTemplate, 'package.json'), JSON.stringify({ dependencies: { prisma: '6.0.0' } }));
+  fs.writeFileSync(path.join(template, 'README.md'), 'template\n');
+  fs.writeFileSync(path.join(template, 'package.json'), JSON.stringify({ dependencies: { prisma: '5.0.0' } }));
+  for (const repo of [devTemplate, template]) {
+    git(repo, ['init']);
+    git(repo, ['config', 'user.email', 'test@example.com']);
+    git(repo, ['config', 'user.name', 'Test User']);
+    git(repo, ['config', 'commit.gpgsign', 'false']);
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'initial']);
+  }
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+`);
+  const config = loadConfig(root);
+  const before = gitOutput(template, ['rev-parse', 'HEAD']);
+
+  promoteTemplate(config, root, {});
+
+  const after = gitOutput(template, ['rev-parse', 'HEAD']);
+  assert.equal(after, before, 'promotion must not create a commit in the template');
+
+  const status = gitOutput(template, ['status', '--porcelain']);
+  assert.ok(status.length > 0, 'mirrored changes must be left in the working tree for review');
+  assert.ok(fs.existsSync(path.join(template, 'app.txt')), 'the mirror should still have written its files');
+});
+
 test('template-promotion patch applies upgrade note; downstream patch excludes it', () => {
   const notePath = '.nestled-updates/upgrade-notes/2026-05-17-auth-delay.yaml';
   const patch = `diff --git a/auth.service.ts b/auth.service.ts
