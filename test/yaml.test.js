@@ -65,6 +65,93 @@ agentHints:
   ]);
 });
 
+test('quoted sequence items with prose colons stay scalars', () => {
+  // Regression: the keyValue branch claimed any item containing `: ` as a mapping, so a quoted
+  // hint became { "Update the spec together with the source": "tests/routes/..." } — silently, on
+  // a single line. Upgrade notes quote precisely to keep prose colons out of the grammar.
+  const parsed = parseYaml(`
+agentHints:
+  - "Update the spec together with the source: tests/routes/admin/_index.spec.tsx"
+  - 'Bump forms to 0.8.2, not 0.8.1: 0.8.1 ships broken .d.ts files.'
+`);
+
+  assert.deepEqual(parsed.agentHints, [
+    'Update the spec together with the source: tests/routes/admin/_index.spec.tsx',
+    'Bump forms to 0.8.2, not 0.8.1: 0.8.1 ships broken .d.ts files.'
+  ]);
+});
+
+test('quoted sequence items fold across continuation lines', () => {
+  // Regression: the same mis-parse turned fatal when a continuation line held no colon at all —
+  // "Invalid YAML mapping at line N" — which blocked promote-template entirely.
+  const parsed = parseYaml(`
+agentHints:
+  - "The billing routes live under the \`admin\` parent in routes.tsx: route('billing/plans', ...)
+    giving the real path /admin/billing/plans.
+    There is no /settings/admin tree."
+  - 'A quoted item with a doubled '' quote: still one scalar.'
+`);
+
+  assert.deepEqual(parsed.agentHints, [
+    "The billing routes live under the `admin` parent in routes.tsx: route('billing/plans', ...) giving the real path /admin/billing/plans. There is no /settings/admin tree.",
+    "A quoted item with a doubled ' quote: still one scalar."
+  ]);
+});
+
+test('quoted mapping values fold across continuation lines', () => {
+  // Same bug on the mapping side: the opening line parsed as a scalar keeping its dangling quote
+  // and the continuation then threw "Unexpected YAML indentation".
+  const parsed = parseYaml(`
+title: "Forms 0.8.2 read-only fix: broken declarations
+  and the data-browser peer widening"
+priority: normal
+`);
+
+  assert.equal(parsed.title, 'Forms 0.8.2 read-only fix: broken declarations and the data-browser peer widening');
+  assert.equal(parsed.priority, 'normal');
+});
+
+test('sequence mappings with quoted values still parse as mappings', () => {
+  // The quoted-scalar short-circuit must not swallow `packageReleases` entries.
+  const parsed = parseYaml(`
+packageReleases:
+  - name: '@nestledjs/data-browser'
+    sourcePath: libs/data-browser
+    targetVersion: 1.0.19
+    versionRange: '>=1.0.19'
+`);
+
+  assert.deepEqual(parsed.packageReleases, [
+    {
+      name: '@nestledjs/data-browser',
+      sourcePath: 'libs/data-browser',
+      targetVersion: '1.0.19',
+      versionRange: '>=1.0.19'
+    }
+  ]);
+});
+
+test('quoted values fold on the first key of a sequence-of-mappings item', () => {
+  // The first key of a `- key: value` item is read in parseSequence(), not parseMappingEntry(), so
+  // it needs its own fold. Without one, `- reason: "wrapped` kept its dangling quote and the
+  // continuation line reached parseSequence() as a non-`- ` entry: "Invalid YAML sequence".
+  const parsed = parseYaml(`
+packageReleases:
+  - reason: "forms 0.8.2 depends on forms-core exactly 0.8.0,
+      so the range stays pinned"
+    name: '@nestledjs/data-browser'
+    targetVersion: 1.0.19
+`);
+
+  assert.deepEqual(parsed.packageReleases, [
+    {
+      reason: 'forms 0.8.2 depends on forms-core exactly 0.8.0, so the range stays pinned',
+      name: '@nestledjs/data-browser',
+      targetVersion: '1.0.19'
+    }
+  ]);
+});
+
 test('double-quoted scalars round-trip without compounding backslashes', () => {
   // Regression: parseScalar() sliced quotes without unescaping while formatScalar() escapes via
   // JSON.stringify, so every read-modify-write doubled every backslash (`\n` -> `\\n` -> `\\\\n`),
