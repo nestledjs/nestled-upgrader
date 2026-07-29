@@ -131,6 +131,27 @@ packageReleases:
   ]);
 });
 
+test('quoted values fold on the first key of a sequence-of-mappings item', () => {
+  // The first key of a `- key: value` item is read in parseSequence(), not parseMappingEntry(), so
+  // it needs its own fold. Without one, `- reason: "wrapped` kept its dangling quote and the
+  // continuation line reached parseSequence() as a non-`- ` entry: "Invalid YAML sequence".
+  const parsed = parseYaml(`
+packageReleases:
+  - reason: "forms 0.8.2 depends on forms-core exactly 0.8.0,
+      so the range stays pinned"
+    name: '@nestledjs/data-browser'
+    targetVersion: 1.0.19
+`);
+
+  assert.deepEqual(parsed.packageReleases, [
+    {
+      reason: 'forms 0.8.2 depends on forms-core exactly 0.8.0, so the range stays pinned',
+      name: '@nestledjs/data-browser',
+      targetVersion: '1.0.19'
+    }
+  ]);
+});
+
 test('double-quoted scalars round-trip without compounding backslashes', () => {
   // Regression: parseScalar() sliced quotes without unescaping while formatScalar() escapes via
   // JSON.stringify, so every read-modify-write doubled every backslash (`\n` -> `\\n` -> `\\\\n`),
