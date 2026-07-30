@@ -8,3 +8,6 @@ upgrades/
 patches/
 reports/
 .claude/**
+
+# Timestamped console logs written by the Playwright MCP server during a session.
+.playwright-mcp/
