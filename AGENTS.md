@@ -38,7 +38,7 @@ For each blocked item:
 4. Stay on or create `nestled-upgrade/<upgrade-id>`.
 5. Implement the upgrade intent conservatively.
 6. Run the project verification commands listed in config and the upgrade record.
-7. Update `.nestled/upgrade-log.yaml` with `adapted`, `superseded`, `skipped`, `not-applicable`, or `blocked`.
+7. Update `.nestled/upgrade-log.yaml` with `adapted`, `superseded`, `skipped`, `not-applicable`, or `blocked`. **Key the entry by the upgrade's exact `id`** — copy it from `upgrades/<upgrade-id>.yaml`, never invent one from the date, the branch name, or the package version. Entries are only ever found by exact id, so a key of your own making is invisible: the upgrade stays `pending` forever and is offered again on every future run. The forms 0.8.0 rollout was recorded under four different ids across eight repos this way. Run `node bin/nestled-upgrader.js status` afterwards — it lists log entries matching no upgrade id, and yours should not appear.
 8. Update the report with what happened and why.
 
 Delivery rules:
