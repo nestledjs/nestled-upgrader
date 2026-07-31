@@ -124,6 +124,11 @@ For each blocked report:
 7. Update `.nestled/upgrade-log.yaml`.
 8. Commit the result in the downstream repo.
 
+Always key log entries by the exact `id` in `upgrades/<upgrade-id>.yaml`. The
+catalog may declare `legacyIds` to reconcile historical aliases from older
+manual runs, but new entries should never invent a date/slug. `status` warns
+only for ids that match neither a canonical catalog id nor a declared legacy id.
+
 Patch failure is not final failure. Treat it as an instruction to adapt the upgrade intent to the local code.
 
 ## Upgrade Note Delivery Rules

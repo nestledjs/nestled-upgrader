@@ -14,11 +14,13 @@ import {
   planAll,
   promoteTemplate,
   readUpgradeLog,
+  reportForProject,
   runWorkflow,
   summarizeProject,
   syncPackagesFromPromotion,
   syncTemplate,
   inspectPlan,
+  upgradeAll,
   writeExtractionRecommendations,
   writeUpgradeLog
 } from '../lib/upgrader.js';
@@ -41,6 +43,11 @@ projects:
       - auth
     verification:
       - pnpm lint
+`);
+  fs.writeFileSync(path.join(root, 'legacy-upgrade-aliases.yaml'), `
+aliases:
+  2026-05-13-auth-session-hardening:
+    - 2026-05-13-auth-hardening-old
 `);
   fs.writeFileSync(path.join(root, 'upgrades', '2026-05-13-auth-session-hardening.yaml'), `
 id: 2026-05-13-auth-session-hardening
@@ -83,6 +90,54 @@ test('summarizes project statuses from downstream log', () => {
   const log = readUpgradeLog(config.projects[0], root);
   assert.equal(log.upgrades['2026-05-13-auth-session-hardening'].status, 'skipped');
   assert.equal(summarizeProject(config.projects[0], upgrades, root).counts.skipped, 1);
+});
+
+test('recognizes declared legacy ids as completed upgrade log entries', () => {
+  const root = fixture();
+  const config = loadConfig(root);
+  const upgrades = loadUpgrades(root);
+  writeUpgradeLog(config.projects[0], {
+    template: { repo: 'nestled-template' },
+    upgrades: {
+      '2026-05-13-auth-hardening-old': { status: 'adapted', notes: 'Historical hand-written id.' }
+    }
+  }, root);
+
+  const summary = summarizeProject(config.projects[0], upgrades, root);
+  assert.equal(summary.counts.adapted, 1);
+  assert.deepEqual(summary.orphans, []);
+  assert.equal(inspectPlan(config.projects[0], upgrades[0], root).recommendation, 'no-op');
+  assert.equal(upgradeAll(config, upgrades, root)[0].recommendation, 'no-op');
+  assert.match(reportForProject(config.projects[0], upgrades, root), /2026-05-13-auth-session-hardening: adapted/);
+});
+
+test('does not report source-scoped catalog records as orphaned log entries', () => {
+  const root = fixture();
+  const config = loadConfig(root);
+  fs.writeFileSync(path.join(root, 'upgrades', '2026-05-17-promotion-only.nestled-dev-template.yaml'), `
+id: 2026-05-17-promotion-only
+title: Promotion only
+priority: normal
+area: auth
+type: security
+delivery: code-patch
+sourceRepo: nestled-dev-template
+intent: Promotion source record.
+affectedPaths: []
+verification: []
+`);
+  const catalog = loadUpgrades(root);
+  const downstream = catalog.filter((upgrade) => !upgrade.sourceRepo || upgrade.sourceRepo === 'nestled-template');
+  writeUpgradeLog(config.projects[0], {
+    template: { repo: 'nestled-template' },
+    upgrades: {
+      '2026-05-17-promotion-only': { status: 'applied' }
+    }
+  }, root);
+
+  const summary = summarizeProject(config.projects[0], downstream, root, catalog);
+  assert.equal(summary.counts.pending, 1);
+  assert.deepEqual(summary.orphans, []);
 });
 
 test('plans forked areas as adapt or review', () => {

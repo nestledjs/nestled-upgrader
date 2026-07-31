@@ -46,6 +46,7 @@ const REF = refArgIdx !== -1 && argv[refArgIdx + 1] ? argv[refArgIdx + 1] : 'ori
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UPGRADES_DIR = path.join(ROOT, 'upgrades');
+const LEGACY_ALIASES = path.join(ROOT, 'legacy-upgrade-aliases.yaml');
 const CONFIG = path.join(ROOT, 'upgrader.config.yaml');
 const TEMPLATE_DIR = path.resolve(ROOT, '../nestled-template');
 const STAMP = new Date().toISOString();
@@ -88,16 +89,89 @@ function scalar(text, key) {
   return m ? m[1].replace(/^['"]|['"]$/g, '') : null;
 }
 
+function listScalars(text, key) {
+  const lines = text.split('\n');
+  const values = [];
+  let inList = false;
+  for (const line of lines) {
+    if (!inList && new RegExp(`^${key}:\\s*$`).test(line)) {
+      inList = true;
+      continue;
+    }
+    if (!inList) continue;
+    const item = line.match(/^\s+-\s*(.+?)\s*$/);
+    if (item) {
+      values.push(item[1].replace(/^['"]|['"]$/g, ''));
+      continue;
+    }
+    if (/^\S/.test(line) && line.trim() !== '') break;
+  }
+  return values;
+}
+
+function loadLegacyAliases() {
+  const text = readFileSafe(LEGACY_ALIASES);
+  if (text === null) return {};
+  const aliases = {};
+  let inAliases = false;
+  let current = null;
+  for (const line of text.split('\n')) {
+    if (/^aliases:\s*$/.test(line)) {
+      inAliases = true;
+      continue;
+    }
+    if (!inAliases) continue;
+    const key = line.match(/^ {2}([^:]+):\s*$/);
+    if (key) {
+      current = key[1];
+      aliases[current] ||= [];
+      continue;
+    }
+    const item = line.match(/^ {4}-\s*(.+?)\s*$/);
+    if (item && current) aliases[current].push(item[1].replace(/^['"]|['"]$/g, ''));
+  }
+  return aliases;
+}
+
 // The catalog lives in the upgrader's own checkout — always read from disk.
 function loadCatalog() {
-  return fs.readdirSync(UPGRADES_DIR)
+  const configuredAliases = loadLegacyAliases();
+  const records = fs.readdirSync(UPGRADES_DIR)
     .filter((f) => f.endsWith('.yaml'))
     .map((f) => {
-      const id = f.replace(/\.yaml$/, '');
+      const fallbackId = f.replace(/\.yaml$/, '');
       const text = readFileSafe(path.join(UPGRADES_DIR, f)) || '';
-      return { id, priority: scalar(text, 'priority') || 'normal' };
-    })
-    .sort((a, b) => a.id.localeCompare(b.id));
+      const id = scalar(text, 'id') || fallbackId;
+      return {
+        id,
+        priority: scalar(text, 'priority') || 'normal',
+        legacyIds: [...new Set([...listScalars(text, 'legacyIds'), ...(configuredAliases[id] || [])])]
+      };
+    });
+  const byId = new Map();
+  for (const record of records) {
+    const existing = byId.get(record.id);
+    if (!existing) {
+      byId.set(record.id, record);
+      continue;
+    }
+    existing.legacyIds = [...new Set([...(existing.legacyIds || []), ...(record.legacyIds || [])])];
+    if (existing.priority === 'ignore' && record.priority !== 'ignore') existing.priority = record.priority;
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function logHasUpgrade(log, upgrade) {
+  return log.ids.has(upgrade.id) || (upgrade.legacyIds || []).some((id) => log.ids.has(id));
+}
+
+function catalogLogIds(catalog) {
+  const ids = new Set();
+  for (const upgrade of catalog) {
+    ids.add(upgrade.id);
+    for (const legacyId of upgrade.legacyIds || []) ids.add(legacyId);
+  }
+  return ids;
 }
 
 // Project list from upgrader.config.yaml (the upgrader's own checkout).
@@ -256,6 +330,7 @@ if (FETCH && !USE_WORKTREE) {
 }
 
 const catalog = loadCatalog();
+const catalogIds = catalogLogIds(catalog);
 const source = USE_WORKTREE ? 'working tree' : REF;
 const report = [];
 report.push(`# Nestled upgrade currency report`);
@@ -270,8 +345,8 @@ const reviewByRepo = {};
 
 for (const proj of projects) {
   const log = loadLog(proj.dir);
-  const missing = catalog.filter((u) => !log.ids.has(u.id));
-  const orphan = [...log.ids.keys()].filter((id) => !catalog.some((u) => u.id === id));
+  const missing = catalog.filter((u) => !logHasUpgrade(log, u));
+  const orphan = [...log.ids.keys()].filter((id) => !catalogIds.has(id));
 
   const buckets = { na: [], present: [], review: [] };
   for (const u of missing) {
