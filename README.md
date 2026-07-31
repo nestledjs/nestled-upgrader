@@ -6,8 +6,8 @@ Control-plane CLI for promoting `nestled-dev-template` into `nestled-template`, 
 
 The primary workflow is:
 
-1. Discover sibling projects and create their local upgrade history.
-2. Run `promote-template` to generate promotion records from `nestled-dev-template` and validate/promote allowed changes into `nestled-template`.
+1. Discover sibling product projects and create their local upgrade history.
+2. Run `promote-template` to mirror allowed product-surface changes from `nestled-dev-template` into `nestled-template`.
 3. Generate downstream upgrade records and patches from `nestled-template` commit ranges.
 4. Run `upgrade --all` to check every product project, apply clean patches, and produce agent handoff reports for adaptations.
 
@@ -35,11 +35,11 @@ node bin/nestled-upgrader.js apply --project <name> --upgrade <id>
 node bin/nestled-upgrader.js report --project <name>
 ```
 
-`discover` scans sibling directories next to `nestled-upgrader`, adds likely Nestled projects to `upgrader.config.yaml`, and initializes `.nestled/upgrade-log.yaml` in each configured project. A sibling is discovered when it already has `.nestled/` or its `package.json` name/workspaces/dependencies reference Nestled. `init` only initializes or refreshes local history for projects already in config.
+`discover` scans sibling directories next to `nestled-upgrader`, adds likely Nestled product projects to `upgrader.config.yaml`, and initializes `.nestled/upgrade-log.yaml` in each downstream project. A sibling is discovered when it already has `.nestled/` or its `package.json` name/workspaces/dependencies reference Nestled. `init` only initializes or refreshes local history for downstream projects already in config; the template-promotion target is not a downstream upgrade ledger.
 
 `sync-template` compares `upgrader.state.yaml` with the current `nestled-template` HEAD and creates a draft downstream upgrade record plus patch when the clone template has moved. If no state exists yet, it records the current clone template commit as the ground-zero baseline.
 
-`promote-template` compares separate promotion state with `nestled-dev-template`, syncs promotion records from dev-template upgrade notes, then applies only pending promotion upgrades to `nestled-template` using template-promotion policy. Raw promotion excludes root package manifests, lockfiles, and package source directories such as `libs/data-browser/**` and `libs/shared-components/**`; package/library changes must be represented as `package-release` or `hybrid` notes so `nestled-template` consumes published packages instead of copying source.
+`promote-template` compares separate promotion state with `nestled-dev-template`, then mirrors allowed tracked files into `nestled-template` using template-promotion policy. Raw promotion excludes root package manifests, lockfiles, and package source directories such as `libs/data-browser/**` and `libs/shared-components/**`; package/library changes must be represented as `package-release` or `hybrid` notes so `nestled-template` consumes published packages instead of copying source.
 
 `run` is the top-to-bottom agent entry point. It discovers projects, runs template promotion first, syncs `nestled-template`, writes dry-run reports for product projects, applies clean direct patches, and leaves agent handoff reports for blocked adaptations. On the first run, it establishes the current clone template commit as ground zero when no prior sync state exists.
 

@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import {
   addDiscoveredProjects,
   applyUpgrade,
+  downstreamProjects,
   findUpgrade,
   initializeAllLogs,
   loadConfig,
@@ -229,6 +230,47 @@ projects: []
   const discovered = addDiscoveredProjects(config, root);
   assert.equal(discovered.length, 1);
   assert.equal(discovered[0].name, 'project-b');
+  assert.ok(fs.existsSync(path.join(project, '.nestled', 'upgrade-log.yaml')));
+});
+
+test('bulk log initialization skips template promotion targets', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-upgrader-'));
+  const template = path.join(root, 'nestled-template');
+  const project = path.join(root, 'project-a');
+  fs.mkdirSync(path.join(template, '.nestled'), { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: nestled-template
+  mainBranch: main
+projects:
+  - name: nestled-template
+    path: nestled-template
+    defaultBranch: main
+    role: template-promotion
+  - name: project-a
+    path: project-a
+    defaultBranch: main
+`);
+  const templateLogPath = path.join(template, '.nestled', 'upgrade-log.yaml');
+  const originalTemplateLog = [
+    'template:',
+    '  repo: nestled-template',
+    'upgrades:',
+    '  old-template-decision:',
+    '    status: blocked',
+    "    reviewedAt: '2026-07-31T00:00:00.000Z'",
+    ''
+  ].join('\n');
+  fs.writeFileSync(templateLogPath, originalTemplateLog);
+
+  const config = loadConfig(root);
+  const initialized = initializeAllLogs(config, root);
+
+  assert.deepEqual(downstreamProjects(config).map((item) => item.name), ['project-a']);
+  assert.deepEqual(initialized.map((item) => item.project), ['project-a']);
+  assert.equal(fs.readFileSync(templateLogPath, 'utf8'), originalTemplateLog);
   assert.ok(fs.existsSync(path.join(project, '.nestled', 'upgrade-log.yaml')));
 });
 

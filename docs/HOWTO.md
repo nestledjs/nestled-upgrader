@@ -8,7 +8,7 @@ This project promotes changes from `nestled-dev-template` into `nestled-template
 - `../nestled-template`: cloneable template used for new projects.
 - configured product projects: upgrade targets listed in `upgrader.config.yaml`.
 
-Do not treat `nestled-template` as a normal product project. It is promoted first with stricter filtering, then product projects are upgraded from it.
+Do not treat `nestled-template` as a normal product project. It is promoted first with stricter filtering, then product projects are upgraded from it. `nestled-template` is not expected to carry product-style `applied`/`adapted`/`superseded`/`blocked` upgrade decisions; check its currency with `promote-template --dry-run`.
 
 ## Normal Agent Command
 
@@ -51,7 +51,7 @@ Promotion is an **import-aware file mirror**, not a patch apply, so it never blo
 
 On the way in it rewrites the two per-clone seams: `@nestled-template/data-browser` → the `@nestledjs/data-browser` package, and the Compose project `name:` → `nestled-template`. Extend the exclude/substitution sets under `promotion.mirror` in `upgrader.config.yaml`.
 
-The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` (its own upgrade log, template-only notes) are preserved and listed under "Template-only files" in the report. Package versions still flow through `packageReleases` dependency bumps, handled separately, not copied source.
+The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` are preserved and listed under "Template-only files" in the report. Package versions still flow through `packageReleases` dependency bumps, handled separately, not copied source.
 
 Because promotion mirrors dev-template's committed state, any fix must originate in `nestled-dev-template` and flow down — do not patch `nestled-template` directly, or the next promotion will revert it.
 
@@ -96,6 +96,8 @@ Start with:
 node bin/nestled-upgrader.js status
 ```
 
+`status` reports downstream product projects. It labels the `template-promotion` target separately so a stale or historical template ledger cannot look like product upgrade backlog.
+
 Then read:
 
 - `reports/upgrade-rollup.md`
@@ -121,7 +123,7 @@ For each blocked report:
 4. Use or create branch `nestled-upgrade/<upgrade-id>`.
 5. Implement the upgrade intent conservatively.
 6. Run verification from the project config and upgrade record.
-7. Update `.nestled/upgrade-log.yaml`.
+7. Update the downstream project's `.nestled/upgrade-log.yaml`.
 8. Commit the result in the downstream repo.
 
 Always key log entries by the exact `id` in `upgrades/<upgrade-id>.yaml`. The
