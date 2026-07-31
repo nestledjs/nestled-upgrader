@@ -1,0 +1,30 @@
+aliases:
+  2026-05-25-shared-utils-cookie-vite-ssr-fix:
+    - 2026-05-25-shared-utils-cookie-vite-ssr-fix-recheck
+  2026-07-14-template-identity-cleanup:
+    - 2026-07-15-template-identity-cleanup
+  2026-07-15-email-verified-flag-and-auth-enumeration:
+    - 2026-07-15-email-verified-flag
+  2026-07-15-signup-abuse-gate-turnstile-throttle-email-hygiene:
+    - 2026-07-15-signup-abuse-gate
+  2026-07-16-signup-gate-doc-forgot-password:
+    - 2026-07-15-signup-gate-doc
+  2026-07-20-e2e-signup-gate-disable-and-forgotpassword-contract:
+    - 2026-07-15-e2e-harness
+  2026-07-20-resend-verification-captcha-widget:
+    - 2026-07-15-resend-verification-captcha
+  2026-07-22-nestled-forms-upgrade:
+    - 2026-07-24-nestled-forms-upgrade
+    - 2026-07-24-nestled-forms-0.8.0-upgrade
+    - 2026-07-24-forms-upgrade
+    - 2026-07-24-forms-0.8.0-upgrade
+    - 2026-07-24-data-browser-dark-mode
+  2026-07-22-web-typecheck-cache-inputs:
+    - 2026-07-24-web-typecheck-cache-inputs
+  2026-07-23-audit-log-filters-facets-and-pickers:
+    - 2026-07-24-audit-log-filters
+    - 2026-07-24-audit-log-filters-facets-and-pickers
+  2026-07-23-billing-audit-coverage:
+    - 2026-07-24-billing-audit-coverage
+  2026-07-23-typescript-safety-cleanup:
+    - 2026-07-24-typescript-safety-cleanup
