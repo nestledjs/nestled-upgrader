@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import {
   addDiscoveredProjects,
   applyUpgrade,
+  findUpgrade,
   initializeAllLogs,
   loadConfig,
   loadUpgrades,
@@ -109,6 +110,27 @@ test('recognizes declared legacy ids as completed upgrade log entries', () => {
   assert.equal(inspectPlan(config.projects[0], upgrades[0], root).recommendation, 'no-op');
   assert.equal(upgradeAll(config, upgrades, root)[0].recommendation, 'no-op');
   assert.match(reportForProject(config.projects[0], upgrades, root), /2026-05-13-auth-session-hardening: adapted/);
+});
+
+test('findUpgrade prefers the downstream record when a legacy id matches both pipelines', () => {
+  const root = fixture();
+  fs.writeFileSync(path.join(root, 'upgrades', '2026-05-13-auth-session-hardening.nestled-dev-template.yaml'), `
+id: 2026-05-13-auth-session-hardening
+title: Auth session hardening promotion
+priority: high
+area: auth
+type: security
+delivery: code-patch
+sourceRepo: nestled-dev-template
+intent: Promotion source record.
+affectedPaths: []
+verification: []
+`);
+
+  const upgrade = findUpgrade(loadUpgrades(root), '2026-05-13-auth-hardening-old');
+  assert.equal(upgrade.id, '2026-05-13-auth-session-hardening');
+  assert.equal(upgrade.sourceRepo || 'nestled-template', 'nestled-template');
+  assert.equal(path.basename(upgrade.recordPath), '2026-05-13-auth-session-hardening.yaml');
 });
 
 test('does not report source-scoped catalog records as orphaned log entries', () => {
