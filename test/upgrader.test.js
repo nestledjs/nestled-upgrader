@@ -79,6 +79,25 @@ test('loads config and upgrade records', () => {
   assert.equal(upgrades[0].id, '2026-05-13-auth-session-hardening');
 });
 
+test('does not rewrite config when project discovery finds no new projects', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-upgrader-'));
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), [
+    'template:',
+    '  name: nestled-template',
+    '  path: ../nestled-template',
+    '# Keep this operator note intact.',
+    'projects: []',
+    ''
+  ].join('\n'));
+  const before = fs.readFileSync(path.join(root, 'upgrader.config.yaml'), 'utf8');
+
+  const config = loadConfig(root);
+  const discovered = addDiscoveredProjects(config, root);
+
+  assert.deepEqual(discovered, []);
+  assert.equal(fs.readFileSync(path.join(root, 'upgrader.config.yaml'), 'utf8'), before);
+});
+
 test('summarizes project statuses from downstream log', () => {
   const root = fixture();
   const config = loadConfig(root);
@@ -354,6 +373,34 @@ test('plans every project and upgrade in one dry-run', () => {
   const plans = planAll(config, upgrades, root);
   assert.equal(plans.length, 1);
   assert.ok(fs.existsSync(path.join(root, 'reports', 'upgrade-rollup.md')));
+});
+
+test('dry-run planning preserves existing reports for already recorded upgrades', () => {
+  const root = fixture();
+  const config = loadConfig(root);
+  const upgrades = loadUpgrades(root);
+  writeUpgradeLog(config.projects[0], {
+    template: { repo: 'nestled-template' },
+    upgrades: {
+      '2026-05-13-auth-session-hardening': { status: 'adapted', notes: 'Completed with local changes.' }
+    }
+  }, root);
+  const reportPath = path.join(root, 'reports', 'project-a', '2026-05-13-auth-session-hardening.md');
+  const report = [
+    '# Auth session hardening',
+    '',
+    'Mode: apply',
+    'Outcome: adapted',
+    'Detailed adaptation notes that should not be replaced by a no-op dry-run report.',
+    ''
+  ].join('\n');
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, report);
+
+  const plans = planAll(config, upgrades, root);
+
+  assert.equal(plans[0].recommendation, 'no-op');
+  assert.equal(fs.readFileSync(reportPath, 'utf8'), report);
 });
 
 test('applies a clean patch on an upgrade branch and records history', () => {
