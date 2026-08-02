@@ -13,6 +13,7 @@ import {
   loadConfig,
   loadUpgrades,
   mirrorTemplateFromSource,
+  normalizeUpgradeLogs,
   planAll,
   promoteTemplate,
   readUpgradeLog,
@@ -272,6 +273,77 @@ projects:
   assert.deepEqual(initialized.map((item) => item.project), ['project-a']);
   assert.equal(fs.readFileSync(templateLogPath, 'utf8'), originalTemplateLog);
   assert.ok(fs.existsSync(path.join(project, '.nestled', 'upgrade-log.yaml')));
+});
+
+test('normalizes downstream upgrade logs without touching template promotion ledgers', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-upgrader-'));
+  const template = path.join(root, 'nestled-template');
+  const project = path.join(root, 'project-a');
+  fs.mkdirSync(path.join(template, '.nestled'), { recursive: true });
+  fs.mkdirSync(path.join(project, '.nestled'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: nestled-template
+  mainBranch: main
+projects:
+  - name: nestled-template
+    path: nestled-template
+    defaultBranch: main
+    role: template-promotion
+  - name: project-a
+    path: project-a
+    defaultBranch: main
+`);
+  const templateLogPath = path.join(template, '.nestled', 'upgrade-log.yaml');
+  const projectLogPath = path.join(project, '.nestled', 'upgrade-log.yaml');
+  const templateLog = [
+    'template:',
+    '  repo: nestled-template',
+    'upgrades:',
+    '  old-template-decision:',
+    '    status: blocked',
+    "    reviewedAt: '2026-07-31T00:00:00.000Z'",
+    ''
+  ].join('\n');
+  const nonCanonicalProjectLog = [
+    'template:',
+    '  repo: nestled-template',
+    'upgrades:',
+    '  2026-07-31-backlog:',
+    '    status: adapted',
+    "    reviewedAt: '2026-07-31T00:00:00.000Z'",
+    '    notes: "Already implemented here; no change made."',
+    ''
+  ].join('\n');
+  fs.writeFileSync(templateLogPath, templateLog);
+  fs.writeFileSync(projectLogPath, nonCanonicalProjectLog);
+
+  const config = loadConfig(root);
+  const check = normalizeUpgradeLogs(config, root, { check: true });
+  assert.deepEqual(check.map((item) => [item.project, item.changed, item.skipped || false]), [
+    ['project-a', true, false]
+  ]);
+  assert.equal(fs.readFileSync(projectLogPath, 'utf8'), nonCanonicalProjectLog);
+
+  const result = normalizeUpgradeLogs(config, root);
+  assert.deepEqual(result.map((item) => [item.project, item.changed, item.skipped || false]), [
+    ['project-a', true, false]
+  ]);
+  assert.equal(fs.readFileSync(templateLogPath, 'utf8'), templateLog);
+  assert.equal(fs.readFileSync(projectLogPath, 'utf8'), [
+    'template:',
+    '  repo: nestled-template',
+    'upgrades:',
+    '  2026-07-31-backlog:',
+    '    status: adapted',
+    '    reviewedAt: "2026-07-31T00:00:00.000Z"',
+    '    notes: Already implemented here; no change made.',
+    ''
+  ].join('\n'));
+
+  const secondCheck = normalizeUpgradeLogs(config, root, { check: true });
+  assert.equal(secondCheck[0].changed, false);
 });
 
 test('plans every project and upgrade in one dry-run', () => {

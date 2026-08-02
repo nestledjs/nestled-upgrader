@@ -105,6 +105,26 @@ Then read:
 - `upgrades/<upgrade-id>.yaml`
 - `<project>/.nestled/upgrade-log.yaml`
 
+## Upgrade Log Formatting
+
+Downstream `.nestled/upgrade-log.yaml` files are machine-owned ledgers. The upgrader
+canonicalizes them with its own YAML writer: plain scalars when safe, double quotes
+when YAML requires quoting. To avoid quote-only churn appearing inside unrelated
+product upgrade PRs, check formatting before starting a round:
+
+```bash
+node bin/nestled-upgrader.js format-logs --check
+```
+
+To normalize configured downstream product ledgers:
+
+```bash
+node bin/nestled-upgrader.js format-logs
+```
+
+The command skips the `template-promotion` project because `nestled-template` is not
+a downstream upgrade ledger.
+
 Common outcomes:
 
 - `applied`: patch/package update applied and verification passed.

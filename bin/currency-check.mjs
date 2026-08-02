@@ -44,7 +44,8 @@ const USE_WORKTREE = FIX || argv.includes('--worktree');
 const refArgIdx = argv.indexOf('--ref');
 const REF = refArgIdx !== -1 && argv[refArgIdx + 1] ? argv[refArgIdx + 1] : 'origin/develop';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = process.env.NESTLED_UPGRADER_ROOT ? path.resolve(process.env.NESTLED_UPGRADER_ROOT) : DEFAULT_ROOT;
 const UPGRADES_DIR = path.join(ROOT, 'upgrades');
 const LEGACY_ALIASES = path.join(ROOT, 'legacy-upgrade-aliases.yaml');
 const CONFIG = path.join(ROOT, 'upgrader.config.yaml');
@@ -133,10 +134,64 @@ function loadLegacyAliases() {
   return aliases;
 }
 
+function scopedScalar(section, key, fallback) {
+  const text = readFileSafe(CONFIG) || '';
+  const lines = text.split('\n');
+  let inSection = false;
+  for (const line of lines) {
+    if (!inSection && new RegExp(`^${section}:\\s*$`).test(line)) {
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    if (/^\S/.test(line) && line.trim() !== '') break;
+    const match = line.match(new RegExp(`^\\s+${key}:\\s*(.+?)\\s*$`));
+    if (match) return match[1].replace(/^['"]|['"]$/g, '');
+  }
+  return fallback;
+}
+
+function nestedScopedScalar(section, nestedSection, key, fallback) {
+  const text = readFileSafe(CONFIG) || '';
+  const lines = text.split('\n');
+  let inSection = false;
+  let inNested = false;
+  for (const line of lines) {
+    if (!inSection && new RegExp(`^${section}:\\s*$`).test(line)) {
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    if (/^\S/.test(line) && line.trim() !== '') break;
+    if (!inNested && new RegExp(`^\\s+${nestedSection}:\\s*$`).test(line)) {
+      inNested = true;
+      continue;
+    }
+    if (!inNested) continue;
+    if (/^ {2}\S/.test(line) && !new RegExp(`^\\s+${nestedSection}:\\s*$`).test(line)) break;
+    const match = line.match(new RegExp(`^\\s+${key}:\\s*(.+?)\\s*$`));
+    if (match) return match[1].replace(/^['"]|['"]$/g, '');
+  }
+  return fallback;
+}
+
+function scopedRecordSource(record, promotionSourceName) {
+  const base = record.fileName.replace(/\.ya?ml$/, '');
+  if (base.endsWith(`.${promotionSourceName}`)) return promotionSourceName;
+  return record.sourceRepo || null;
+}
+
+function isDownstreamCatalogRecord(record, downstreamSourceName, promotionSourceName) {
+  const sourceRepo = scopedRecordSource(record, promotionSourceName);
+  return !sourceRepo || sourceRepo === downstreamSourceName;
+}
+
 // The catalog lives in the upgrader's own checkout — always read from disk.
-function loadCatalog() {
+function loadCatalog({ downstreamOnly = true } = {}) {
   const configuredAliases = loadLegacyAliases();
-  const records = fs.readdirSync(UPGRADES_DIR)
+  const downstreamSourceName = scopedScalar('template', 'name', 'nestled-template');
+  const promotionSourceName = nestedScopedScalar('promotion', 'source', 'name', 'nestled-dev-template');
+  let records = fs.readdirSync(UPGRADES_DIR)
     .filter((f) => f.endsWith('.yaml'))
     .map((f) => {
       const fallbackId = f.replace(/\.yaml$/, '');
@@ -144,10 +199,15 @@ function loadCatalog() {
       const id = scalar(text, 'id') || fallbackId;
       return {
         id,
+        fileName: f,
         priority: scalar(text, 'priority') || 'normal',
+        sourceRepo: scalar(text, 'sourceRepo'),
         legacyIds: [...new Set([...listScalars(text, 'legacyIds'), ...(configuredAliases[id] || [])])]
       };
     });
+  if (downstreamOnly) {
+    records = records.filter((record) => isDownstreamCatalogRecord(record, downstreamSourceName, promotionSourceName));
+  }
   const byId = new Map();
   for (const record of records) {
     const existing = byId.get(record.id);
@@ -329,8 +389,9 @@ if (FETCH && !USE_WORKTREE) {
   for (const p of projects) spawnSync('git', ['-C', p.dir, 'fetch', 'origin', '--quiet']);
 }
 
+const fullCatalog = loadCatalog({ downstreamOnly: false });
 const catalog = loadCatalog();
-const catalogIds = catalogLogIds(catalog);
+const catalogIds = catalogLogIds(fullCatalog);
 const source = USE_WORKTREE ? 'working tree' : REF;
 const report = [];
 report.push(`# Nestled upgrade currency report`);
