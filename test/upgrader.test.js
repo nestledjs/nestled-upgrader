@@ -618,6 +618,41 @@ projects:
   assert.equal(loadUpgrades(root).length, 1);
 });
 
+test('sync-template skips metadata-only .nestled changes', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(path.join(template, '.nestled'), { recursive: true });
+  fs.writeFileSync(path.join(template, 'README.md'), 'template\n');
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects: []
+`);
+
+  const config = loadConfig(root);
+  syncTemplate(config, root);
+  fs.writeFileSync(path.join(template, '.nestled', 'upgrade-log.yaml'), 'upgrades: {}\n');
+  git(template, ['add', '.nestled/upgrade-log.yaml']);
+  git(template, ['commit', '-m', 'add template ledger']);
+
+  const result = syncTemplate(config, root);
+
+  assert.equal(result.created, false);
+  assert.match(result.reason, /\.nestled metadata/);
+  assert.equal(loadUpgrades(root).length, 0);
+});
+
 test('sync-template copies upgrade notes from dev template contract', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
   const root = path.join(parent, 'nestled-upgrader');
