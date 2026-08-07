@@ -725,6 +725,7 @@ test('promotion uses dev-template while downstream sync uses nestled-template', 
     git(repo, ['add', 'README.md']);
     git(repo, ['commit', '-m', 'initial']);
   }
+  publishDevTemplate(devTemplate);
   fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
 promotion:
   source:
@@ -794,6 +795,7 @@ test('a note id promoted to the template still yields a downstream-eligible reco
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'initial']);
   }
+  publishDevTemplate(devTemplate);
   fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
 promotion:
   source:
@@ -840,6 +842,7 @@ projects:
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'add shared-fix note']);
   }
+  publishDevTemplate(devTemplate);
 
   // Promotion runs first (as in the real workflow), then downstream sync.
   promoteTemplate(config, root, { dryRun: true });
@@ -1209,6 +1212,7 @@ test('promoteTemplate includes packageSync result', () => {
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'initial']);
   }
+  publishDevTemplate(devTemplate);
   fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
 promotion:
   source:
@@ -1259,6 +1263,7 @@ test('promoteTemplate leaves its changes uncommitted', () => {
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'initial']);
   }
+  publishDevTemplate(devTemplate);
   fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
 promotion:
   source:
@@ -1440,6 +1445,7 @@ test('mirrorTemplateFromSource copies product files, applies seam substitutions,
     git(repo, ['add', '-A']);
     git(repo, ['commit', '-m', 'initial']);
   }
+  publishDevTemplate(devTemplate);
 
   fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
 promotion:
@@ -1482,6 +1488,22 @@ projects:
   assert.ok(result.changes.some((c) => c.path === '.nestled-updates/upgrade-notes/n.yaml' && c.kind === 'new'));
 });
 
+// A promotion now reads `origin/develop`, never the working tree, so any dev-template fixture must
+// look like a real checkout: a develop branch published to an origin it can fetch. Uses a bare repo
+// beside the checkout rather than a network remote.
+function publishDevTemplate(devTemplate, { branch = 'develop' } = {}) {
+  const origin = `${devTemplate}-origin.git`;
+  git(devTemplate, ['branch', '-M', branch]);
+  // Idempotent: fixtures that commit in several rounds call this after each one, and the second
+  // call only needs to push.
+  if (!fs.existsSync(origin)) {
+    spawnSync('git', ['init', '--bare', '-b', branch, origin], { encoding: 'utf8' });
+    git(devTemplate, ['remote', 'add', 'origin', origin]);
+  }
+  git(devTemplate, ['push', '-u', 'origin', branch]);
+  return origin;
+}
+
 function git(cwd, args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -1492,3 +1514,135 @@ function gitOutput(cwd, args) {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();
 }
+
+// --- promotion reads committed state only -------------------------------------------------
+// These cover the defect where the mirror listed files with `git ls-files` and read them with
+// `fs.readFileSync`, so it copied the operator's working tree while reporting a commit sha that
+// did not contain those bytes. The report was not merely incomplete, it was wrong.
+
+function promotionFixture() {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-committed-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  for (const d of [root, devTemplate, template]) fs.mkdirSync(d, { recursive: true });
+
+  const write = (repo, rel, content) => {
+    const abs = path.join(repo, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  };
+
+  write(devTemplate, 'apps/api/src/service.ts', 'committed\n');
+  write(devTemplate, 'apps/api/src/keep.ts', 'keep\n');
+  write(template, 'apps/api/src/service.ts', 'stale\n');
+
+  for (const repo of [devTemplate, template]) {
+    git(repo, ['init']);
+    git(repo, ['config', 'user.email', 'test@example.com']);
+    git(repo, ['config', 'user.name', 'Test User']);
+    git(repo, ['config', 'commit.gpgsign', 'false']);
+    git(repo, ['add', '-A']);
+    git(repo, ['commit', '-m', 'initial']);
+  }
+  publishDevTemplate(devTemplate);
+
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+`);
+  return { root, devTemplate, template, write, config: loadConfig(root) };
+}
+
+test('promotion ignores tracked uncommitted edits in the source working tree', () => {
+  const { root, devTemplate, template, config } = promotionFixture();
+  fs.writeFileSync(path.join(devTemplate, 'apps/api/src/service.ts'), 'UNCOMMITTED EDIT\n');
+
+  mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.readFileSync(path.join(template, 'apps/api/src/service.ts'), 'utf8'), 'committed\n');
+});
+
+test('promotion ignores uncommitted additions and deletions in the source', () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  // staged-but-uncommitted addition: `git ls-files` would have reported it
+  write(devTemplate, 'apps/api/src/added.ts', 'not committed yet\n');
+  git(devTemplate, ['add', 'apps/api/src/added.ts']);
+  // uncommitted deletion: reading from disk would have skipped a file that is still committed
+  fs.rmSync(path.join(devTemplate, 'apps/api/src/keep.ts'));
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.existsSync(path.join(template, 'apps/api/src/added.ts')), false);
+  assert.equal(fs.readFileSync(path.join(template, 'apps/api/src/keep.ts'), 'utf8'), 'keep\n');
+  assert.ok(!result.changes.some((c) => c.path === 'apps/api/src/added.ts'));
+});
+
+test('promotion reads origin/develop even when a feature branch is checked out', () => {
+  const { root, devTemplate, template, config } = promotionFixture();
+  git(devTemplate, ['checkout', '-b', 'feat/in-progress']);
+  fs.writeFileSync(path.join(devTemplate, 'apps/api/src/service.ts'), 'FEATURE BRANCH WORK\n');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'in progress']);
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.readFileSync(path.join(template, 'apps/api/src/service.ts'), 'utf8'), 'committed\n');
+  assert.equal(result.sourceRef, 'origin/develop');
+});
+
+test('promotion prefers newer origin/develop over a stale local develop', () => {
+  const { root, devTemplate, template, config } = promotionFixture();
+  const origin = `${devTemplate}-origin.git`;
+  // Advance origin/develop through a second clone, leaving this checkout behind.
+  const other = `${devTemplate}-other`;
+  spawnSync('git', ['clone', origin, other], { encoding: 'utf8' });
+  git(other, ['config', 'user.email', 'test@example.com']);
+  git(other, ['config', 'user.name', 'Test User']);
+  git(other, ['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(other, 'apps/api/src/service.ts'), 'newer on origin\n');
+  git(other, ['add', '-A']);
+  git(other, ['commit', '-m', 'newer']);
+  git(other, ['push', 'origin', 'develop']);
+
+  const localBefore = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.readFileSync(path.join(template, 'apps/api/src/service.ts'), 'utf8'), 'newer on origin\n');
+  assert.notEqual(result.sourceSha, localBefore);
+  assert.equal(result.sourceSha, gitOutput(other, ['rev-parse', 'HEAD']));
+});
+
+test('promotion stops with a clear error when the source ref cannot be fetched', () => {
+  const { root, devTemplate, config } = promotionFixture();
+  git(devTemplate, ['remote', 'set-url', 'origin', path.join(devTemplate, 'no-such-origin.git')]);
+
+  assert.throws(
+    () => mirrorTemplateFromSource(config, root, { dryRun: true }),
+    (err) => /Fetching develop for the promotion source failed/.test(err.message)
+  );
+});
+
+test('the promotion report records the resolved ref and full sha', () => {
+  const { root, devTemplate, config } = promotionFixture();
+  const head = gitOutput(devTemplate, ['rev-parse', 'develop']);
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: true });
+
+  assert.equal(result.sourceRef, 'origin/develop');
+  assert.equal(result.sourceSha, head);
+  assert.equal(result.sourceCommit, head.slice(0, 7));
+});
