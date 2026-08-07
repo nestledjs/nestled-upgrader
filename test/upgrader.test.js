@@ -12,6 +12,7 @@ import {
   initializeAllLogs,
   loadConfig,
   loadUpgrades,
+  collectExcludedFileDrift,
   mirrorTemplateFromSource,
   normalizeUpgradeLogs,
   planAll,
@@ -1647,4 +1648,96 @@ test('the promotion report records the resolved ref and full sha', () => {
   assert.equal(result.sourceRef, 'origin/develop');
   assert.equal(result.sourceSha, head);
   assert.equal(result.sourceCommit, head.slice(0, 7));
+});
+
+// --- excluded-file drift ------------------------------------------------------------------
+// package.json, tsconfig.base.json and sonar-project.properties are excluded from the mirror
+// because they carry the imported-vs-embedded seam. That is correct and silent, and the silence
+// cost four separate breakages in one batch: a missing verify:prisma-client script, a missing
+// test runner, a missing path alias that broke the build, and a stale Sonar source that failed CI.
+
+test('collectExcludedFileDrift reports scripts, path aliases and sonar sources that never arrive', () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+
+  write(devTemplate, 'package.json', JSON.stringify({
+    scripts: { build: 'nx build', 'verify:prisma-client': 'tsx scripts/verify.ts', 'pub-release': 'x' }
+  }, null, 2));
+  write(devTemplate, 'tsconfig.base.json', `{
+  // a comment, because these files are JSONC in practice
+  "compilerOptions": { "paths": { "@x/admin-custom": ["libs/api/admin-custom/src/index.ts"] } }
+}`);
+  write(devTemplate, 'sonar-project.properties', 'sonar.sources=\\\n  apps/api/src,\\\n  libs/api/admin-custom/src\n');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'excluded files']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  const newSha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  assert.notEqual(newSha, sha);
+
+  write(template, 'package.json', JSON.stringify({ scripts: { build: 'nx build' } }, null, 2));
+  write(template, 'tsconfig.base.json', '{ "compilerOptions": { "paths": {} } }');
+  write(template, 'sonar-project.properties', 'sonar.sources=\\\n  apps/api/src,\\\n  libs/api/retired/src\n');
+
+  const drift = collectExcludedFileDrift(devTemplate, newSha, template, { scripts: ['pub-release'] });
+  const byFile = Object.fromEntries(drift.map((d) => [d.file, d]));
+
+  assert.deepEqual(byFile['package.json'].missing.map((m) => m.key), ['verify:prisma-client']);
+  assert.deepEqual(byFile['tsconfig.base.json'].missing.map((m) => m.key), ['@x/admin-custom']);
+  assert.deepEqual(
+    byFile['sonar-project.properties'].missing.map((m) => m.key),
+    ['libs/api/admin-custom/src']
+  );
+  // a source the template analyses and the source repo does not — reported, not assumed wrong
+  assert.deepEqual(
+    byFile['sonar-project.properties'].targetOnly.map((m) => m.key),
+    ['libs/api/retired/src']
+  );
+  // ignored entries never appear
+  assert.ok(!byFile['package.json'].missing.some((m) => m.key === 'pub-release'));
+});
+
+test('collectExcludedFileDrift reports a changed script rather than only a missing one', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  write(devTemplate, 'package.json', JSON.stringify({ scripts: { t: 'vitest run scripts/doctor-*.spec.ts' } }));
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'widen']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'package.json', JSON.stringify({ scripts: { t: 'vitest run scripts/doctor-auth.spec.ts' } }));
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const scripts = drift.find((d) => d.file === 'package.json');
+
+  assert.equal(scripts.differing.length, 1);
+  assert.equal(scripts.differing[0].key, 't');
+  assert.match(scripts.differing[0].source, /doctor-\*/);
+  assert.match(scripts.differing[0].target, /doctor-auth/);
+});
+
+test('collectExcludedFileDrift is silent when the comparable fields agree', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  const same = JSON.stringify({ scripts: { build: 'nx build' } });
+  write(devTemplate, 'package.json', same);
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'same']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'package.json', same);
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  assert.deepEqual(collectExcludedFileDrift(devTemplate, sha, template, {}), []);
+});
+
+test('the drift report never writes to the excluded files', () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  write(devTemplate, 'package.json', JSON.stringify({ scripts: { onlyUpstream: 'x' } }));
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'upstream only']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  const before = JSON.stringify({ scripts: { build: 'nx build' } });
+  write(template, 'package.json', before);
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.readFileSync(path.join(template, 'package.json'), 'utf8'), before);
+  assert.ok(result.drift.some((d) => d.file === 'package.json'));
 });

@@ -9,6 +9,25 @@ promotion:
     name: my-dev-template
     path: ../my-dev-template
 
+  # A few files are deliberately not mirrored because they carry the imported-vs-embedded seam:
+  # package.json (workspace: refs), tsconfig.base.json (path aliases for libraries the template
+  # consumes as packages), and sonar-project.properties (analysis surface). The promotion report
+  # lists what has drifted in them so nothing goes missing silently — it never writes them.
+  #
+  # Differences that are permanent and correct belong here, so the report keeps its signal.
+  driftIgnore:
+    scripts:
+      # Publishing scripts for the libraries the dev template embeds and the template imports.
+      - pub-build
+      - pub-version
+      - pub-release
+    paths:
+      - '@my-dev-template/data-browser'
+      - '@myorg/shared-components'
+    sonarSources:
+      - libs/data-browser/src
+      - libs/shared-components/src
+
 template:
   name: my-template
   path: ../my-template
