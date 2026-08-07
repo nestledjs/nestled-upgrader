@@ -30,7 +30,7 @@ directories or symlinks to that private store. Start configuration from the fict
 corrupted, just gone from the working tree. Recover it before pulling, or afterwards from history:
 
 ```bash
-git show <that-commit>^:upgrader.config.yaml > upgrader.config.yaml
+git show THAT_COMMIT_SHA^:upgrader.config.yaml > upgrader.config.yaml
 ```
 
 Then move it into your private store and symlink it back, so the next such change cannot take it

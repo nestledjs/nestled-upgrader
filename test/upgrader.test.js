@@ -1497,7 +1497,9 @@ function publishDevTemplate(devTemplate, { branch = 'develop' } = {}) {
   // Idempotent: fixtures that commit in several rounds call this after each one, and the second
   // call only needs to push.
   if (!fs.existsSync(origin)) {
-    spawnSync('git', ['init', '--bare', '-b', branch, origin], { encoding: 'utf8' });
+    // via git() so a failed setup step asserts here rather than surfacing as a confusing
+    // fetch failure several lines later
+    git(path.dirname(origin), ['init', '--bare', '-b', branch, path.basename(origin)]);
     git(devTemplate, ['remote', 'add', 'origin', origin]);
   }
   git(devTemplate, ['push', '-u', 'origin', branch]);
@@ -1609,7 +1611,7 @@ test('promotion prefers newer origin/develop over a stale local develop', () => 
   const origin = `${devTemplate}-origin.git`;
   // Advance origin/develop through a second clone, leaving this checkout behind.
   const other = `${devTemplate}-other`;
-  spawnSync('git', ['clone', origin, other], { encoding: 'utf8' });
+  git(path.dirname(other), ['clone', origin, path.basename(other)]);
   git(other, ['config', 'user.email', 'test@example.com']);
   git(other, ['config', 'user.name', 'Test User']);
   git(other, ['config', 'commit.gpgsign', 'false']);
