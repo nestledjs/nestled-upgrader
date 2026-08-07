@@ -12,6 +12,7 @@ import {
   initializeAllLogs,
   loadConfig,
   loadUpgrades,
+  collectExcludedFileDrift,
   mirrorTemplateFromSource,
   normalizeUpgradeLogs,
   planAll,
@@ -1647,4 +1648,152 @@ test('the promotion report records the resolved ref and full sha', () => {
   assert.equal(result.sourceRef, 'origin/develop');
   assert.equal(result.sourceSha, head);
   assert.equal(result.sourceCommit, head.slice(0, 7));
+});
+
+// --- excluded-file drift ------------------------------------------------------------------
+// package.json, tsconfig.base.json and sonar-project.properties are excluded from the mirror
+// because they carry the imported-vs-embedded seam. That is correct and silent, and the silence
+// cost four separate breakages in one batch: a missing verify:prisma-client script, a missing
+// test runner, a missing path alias that broke the build, and a stale Sonar source that failed CI.
+
+test('collectExcludedFileDrift reports scripts, path aliases and sonar sources that never arrive', () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+
+  write(devTemplate, 'package.json', JSON.stringify({
+    scripts: { build: 'nx build', 'verify:prisma-client': 'tsx scripts/verify.ts', 'pub-release': 'x' }
+  }, null, 2));
+  write(devTemplate, 'tsconfig.base.json', `{
+  // a comment, because these files are JSONC in practice
+  "compilerOptions": { "paths": { "@x/admin-custom": ["libs/api/admin-custom/src/index.ts"] } }
+}`);
+  write(devTemplate, 'sonar-project.properties', 'sonar.sources=\\\n  apps/api/src,\\\n  libs/api/admin-custom/src\n');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'excluded files']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  const newSha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  assert.notEqual(newSha, sha);
+
+  write(template, 'package.json', JSON.stringify({ scripts: { build: 'nx build' } }, null, 2));
+  write(template, 'tsconfig.base.json', '{ "compilerOptions": { "paths": {} } }');
+  write(template, 'sonar-project.properties', 'sonar.sources=\\\n  apps/api/src,\\\n  libs/api/retired/src\n');
+
+  const drift = collectExcludedFileDrift(devTemplate, newSha, template, { scripts: ['pub-release'] });
+  const byFile = Object.fromEntries(drift.map((d) => [d.file, d]));
+
+  assert.deepEqual(byFile['package.json'].missing.map((m) => m.key), ['verify:prisma-client']);
+  assert.deepEqual(byFile['tsconfig.base.json'].missing.map((m) => m.key), ['@x/admin-custom']);
+  assert.deepEqual(
+    byFile['sonar-project.properties'].missing.map((m) => m.key),
+    ['libs/api/admin-custom/src']
+  );
+  // a source the template analyses and the source repo does not — reported, not assumed wrong
+  assert.deepEqual(
+    byFile['sonar-project.properties'].targetOnly.map((m) => m.key),
+    ['libs/api/retired/src']
+  );
+  // ignored entries never appear
+  assert.ok(!byFile['package.json'].missing.some((m) => m.key === 'pub-release'));
+});
+
+test('collectExcludedFileDrift reports a changed script rather than only a missing one', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  write(devTemplate, 'package.json', JSON.stringify({ scripts: { t: 'vitest run scripts/doctor-*.spec.ts' } }));
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'widen']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'package.json', JSON.stringify({ scripts: { t: 'vitest run scripts/doctor-auth.spec.ts' } }));
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const scripts = drift.find((d) => d.file === 'package.json');
+
+  assert.equal(scripts.differing.length, 1);
+  assert.equal(scripts.differing[0].key, 't');
+  assert.match(scripts.differing[0].source, /doctor-\*/);
+  assert.match(scripts.differing[0].target, /doctor-auth/);
+});
+
+test('collectExcludedFileDrift is silent when the comparable fields agree', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  const same = JSON.stringify({ scripts: { build: 'nx build' } });
+  write(devTemplate, 'package.json', same);
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'same']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'package.json', same);
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  assert.deepEqual(collectExcludedFileDrift(devTemplate, sha, template, {}), []);
+});
+
+test('the drift report never writes to the excluded files', () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  write(devTemplate, 'package.json', JSON.stringify({ scripts: { onlyUpstream: 'x' } }));
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'upstream only']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  const before = JSON.stringify({ scripts: { build: 'nx build' } });
+  write(template, 'package.json', before);
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.readFileSync(path.join(template, 'package.json'), 'utf8'), before);
+  assert.ok(result.drift.some((d) => d.file === 'package.json'));
+});
+
+test('collectExcludedFileDrift tolerates trailing commas and reports files it cannot read', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  // trailing comma + comment: JSONC in practice, and JSON.parse rejects both
+  write(devTemplate, 'tsconfig.base.json', `{
+  // paths for the libraries the template consumes as packages
+  "compilerOptions": { "paths": { "@x/admin": ["libs/api/admin/src/index.ts"], } },
+}`);
+  write(devTemplate, 'package.json', '{ "scripts": { "a": "x" } }');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'jsonc']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'tsconfig.base.json', '{ "compilerOptions": { "paths": {} } }');
+  write(template, 'package.json', '{ not json at all');
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const byFile = Object.fromEntries(drift.map((d) => [d.file, d]));
+
+  // the trailing comma parsed, so real drift is still found
+  assert.deepEqual(byFile['tsconfig.base.json'].missing.map((m) => m.key), ['@x/admin']);
+  // the unreadable file is reported, never silently treated as "no drift"
+  assert.ok(byFile['package.json'].unreadable);
+});
+
+test('propertiesList tolerates indentation, spaces around = and trailing whitespace', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  write(devTemplate, 'sonar-project.properties', '  sonar.sources = \\   \n  apps/api/src,\\\n  libs/api/admin-custom/src  \n');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'whitespace']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'sonar-project.properties', 'sonar.sources=\\\n  apps/api/src\n');
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const sonar = drift.find((d) => d.file === 'sonar-project.properties');
+
+  assert.deepEqual(sonar.missing.map((m) => m.key), ['libs/api/admin-custom/src']);
+});
+
+test('tsconfig path target ORDER is significant and reported, not normalised away', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  write(devTemplate, 'tsconfig.base.json', '{ "compilerOptions": { "paths": { "@x/a": ["first.ts", "second.ts"] } } }');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'order']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  // same targets, reversed: TypeScript takes the first match, so this resolves differently
+  write(template, 'tsconfig.base.json', '{ "compilerOptions": { "paths": { "@x/a": ["second.ts", "first.ts"] } } }');
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const ts = drift.find((d) => d.file === 'tsconfig.base.json');
+
+  assert.equal(ts.differing.length, 1);
+  assert.equal(ts.differing[0].key, '@x/a');
 });
