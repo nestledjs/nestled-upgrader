@@ -1741,3 +1741,59 @@ test('the drift report never writes to the excluded files', () => {
   assert.equal(fs.readFileSync(path.join(template, 'package.json'), 'utf8'), before);
   assert.ok(result.drift.some((d) => d.file === 'package.json'));
 });
+
+test('collectExcludedFileDrift tolerates trailing commas and reports files it cannot read', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  // trailing comma + comment: JSONC in practice, and JSON.parse rejects both
+  write(devTemplate, 'tsconfig.base.json', `{
+  // paths for the libraries the template consumes as packages
+  "compilerOptions": { "paths": { "@x/admin": ["libs/api/admin/src/index.ts"], } },
+}`);
+  write(devTemplate, 'package.json', '{ "scripts": { "a": "x" } }');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'jsonc']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'tsconfig.base.json', '{ "compilerOptions": { "paths": {} } }');
+  write(template, 'package.json', '{ not json at all');
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const byFile = Object.fromEntries(drift.map((d) => [d.file, d]));
+
+  // the trailing comma parsed, so real drift is still found
+  assert.deepEqual(byFile['tsconfig.base.json'].missing.map((m) => m.key), ['@x/admin']);
+  // the unreadable file is reported, never silently treated as "no drift"
+  assert.ok(byFile['package.json'].unreadable);
+});
+
+test('propertiesList tolerates indentation, spaces around = and trailing whitespace', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  write(devTemplate, 'sonar-project.properties', '  sonar.sources = \\   \n  apps/api/src,\\\n  libs/api/admin-custom/src  \n');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'whitespace']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  write(template, 'sonar-project.properties', 'sonar.sources=\\\n  apps/api/src\n');
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const sonar = drift.find((d) => d.file === 'sonar-project.properties');
+
+  assert.deepEqual(sonar.missing.map((m) => m.key), ['libs/api/admin-custom/src']);
+});
+
+test('tsconfig path target ORDER is significant and reported, not normalised away', () => {
+  const { devTemplate, template, write } = promotionFixture();
+  write(devTemplate, 'tsconfig.base.json', '{ "compilerOptions": { "paths": { "@x/a": ["first.ts", "second.ts"] } } }');
+  git(devTemplate, ['add', '-A']);
+  git(devTemplate, ['commit', '-m', 'order']);
+  git(devTemplate, ['push', 'origin', 'develop']);
+  // same targets, reversed: TypeScript takes the first match, so this resolves differently
+  write(template, 'tsconfig.base.json', '{ "compilerOptions": { "paths": { "@x/a": ["second.ts", "first.ts"] } } }');
+
+  const sha = gitOutput(devTemplate, ['rev-parse', 'develop']);
+  const drift = collectExcludedFileDrift(devTemplate, sha, template, {});
+  const ts = drift.find((d) => d.file === 'tsconfig.base.json');
+
+  assert.equal(ts.differing.length, 1);
+  assert.equal(ts.differing[0].key, '@x/a');
+});
