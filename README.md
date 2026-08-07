@@ -15,6 +15,18 @@ The primary workflow is:
 
 For the operational runbook, start with [docs/HOWTO.md](docs/HOWTO.md).
 
+### Operational data boundary
+
+This repository contains the reusable CLI, not an operator's project inventory or run history.
+`upgrader.config.yaml`, `upgrader.state.yaml`, `upgrades`, `patches`, and `reports` are intentionally
+gitignored. Keep them locally or in a private operational repository; the ignored paths may be
+directories or symlinks to that private store. Start configuration from the fictional
+`upgrader.config.example.yaml` checked in here.
+
+Never commit real client/project inventories, local paths, site or network assignments, or
+client-specific reports to a public upgrader checkout. A private Git repository can back up those
+artifacts, but credentials and secrets still belong in a secret manager rather than either repo.
+
 Run commands from this repository:
 
 ```bash

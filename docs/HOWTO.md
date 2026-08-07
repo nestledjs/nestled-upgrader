@@ -8,6 +8,11 @@ This project promotes changes from `nestled-dev-template` into `nestled-template
 - `../nestled-template`: cloneable template used for new projects.
 - configured product projects: upgrade targets listed in `upgrader.config.yaml`.
 
+The config, state, upgrade catalog, patches, and reports are operator data and are gitignored. They
+may be local directories or symlinks into a private operational repository. Do not publish real
+client/project inventories, local paths, site or network assignments, or client-specific reports
+with this CLI.
+
 Do not treat `nestled-template` as a normal product project. It is promoted first with stricter filtering, then product projects are upgraded from it. `nestled-template` is not expected to carry product-style `applied`/`adapted`/`superseded`/`blocked` upgrade decisions; check its currency with `promote-template --dry-run`.
 
 ## Normal Agent Command
