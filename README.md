@@ -23,6 +23,20 @@ gitignored. Keep them locally or in a private operational repository; the ignore
 directories or symlinks to that private store. Start configuration from the fictional
 `upgrader.config.example.yaml` checked in here.
 
+#### Upgrading past the commit that untracked these paths
+
+`upgrader.config.yaml` used to be tracked. The commit that removed it deletes your working copy on
+`git pull`, and the CLI then stops with `Missing upgrader.config.yaml` — your configuration is not
+corrupted, just gone from the working tree. Recover it before pulling, or afterwards from history:
+
+```bash
+git show THAT_COMMIT_SHA^:upgrader.config.yaml > upgrader.config.yaml
+```
+
+Then move it into your private store and symlink it back, so the next such change cannot take it
+with it. The same applies to `upgrader.state.yaml`, `upgrades`, `patches`, and `reports` if you were
+carrying them in the repo.
+
 Never commit real client/project inventories, local paths, site or network assignments, or
 client-specific reports to a public upgrader checkout. A private Git repository can back up those
 artifacts, but credentials and secrets still belong in a secret manager rather than either repo.
