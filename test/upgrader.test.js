@@ -1071,6 +1071,66 @@ projects:
   assert.equal(libUpdate.to, '^2.1.0');
 });
 
+test('syncPackagesFromPromotion installs an excluded internal package in an app manifest', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-pkg-app-lib-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(devTemplate, 'libs', 'access-control'), { recursive: true });
+  fs.mkdirSync(path.join(devTemplate, 'apps', 'web'), { recursive: true });
+  fs.mkdirSync(path.join(devTemplate, 'apps', 'web', 'build'), { recursive: true });
+  fs.mkdirSync(path.join(template, 'apps', 'web'), { recursive: true });
+  fs.mkdirSync(path.join(template, 'apps', 'web', 'build'), { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(devTemplate, 'package.json'), JSON.stringify({ dependencies: {} }));
+  fs.writeFileSync(path.join(devTemplate, 'libs', 'access-control', 'package.json'), JSON.stringify({
+    name: '@nestledjs/access-control', version: '0.0.1'
+  }));
+  fs.writeFileSync(path.join(devTemplate, 'apps', 'web', 'package.json'), JSON.stringify({
+    dependencies: { '@nestledjs/access-control': 'workspace:*' }
+  }));
+  fs.writeFileSync(path.join(devTemplate, 'apps', 'web', 'build', 'package.json'), JSON.stringify({
+    dependencies: { '@nestledjs/access-control': 'workspace:*' }
+  }));
+  fs.writeFileSync(path.join(template, 'package.json'), JSON.stringify({ dependencies: {} }));
+  fs.writeFileSync(path.join(template, 'apps', 'web', 'package.json'), JSON.stringify({ dependencies: {} }));
+  fs.writeFileSync(path.join(template, 'apps', 'web', 'build', 'package.json'), JSON.stringify({ dependencies: {} }));
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+`);
+
+  const config = loadConfig(root);
+  const dryRun = syncPackagesFromPromotion(config, root, { dryRun: true });
+  const update = dryRun.updates.find((item) => item.name === '@nestledjs/access-control');
+  assert.equal(dryRun.updates.filter((item) => item.name === '@nestledjs/access-control').length, 1);
+  assert.deepEqual(update, {
+    type: 'internal',
+    manifest: 'apps/web/package.json',
+    field: 'dependencies',
+    name: '@nestledjs/access-control',
+    from: undefined,
+    to: '^0.0.1'
+  });
+
+  const applied = syncPackagesFromPromotion(config, root, { dryRun: false });
+  assert.equal(applied.status, 'applied');
+  const written = JSON.parse(fs.readFileSync(path.join(template, 'apps', 'web', 'package.json'), 'utf8'));
+  assert.equal(written.dependencies['@nestledjs/access-control'], '^0.0.1');
+});
+
 test('syncPackagesFromPromotion writes updated package.json when not dry-run', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-pkg-apply-'));
   const root = path.join(parent, 'nestled-upgrader');
@@ -1430,6 +1490,7 @@ test('mirrorTemplateFromSource copies product files, applies seam substitutions,
   write(devTemplate, '.dev/docker-compose.yml', 'name: nestled-dev-template\nservices: {}\n');
   write(devTemplate, 'nx.json', '{ "release": {} }\n');
   write(devTemplate, 'libs/data-browser/src/index.ts', 'export const v = 1\n');
+  write(devTemplate, 'libs/access-control/src/index.ts', 'export const access = 1\n');
   write(devTemplate, '.cursor/skills/foo.md', 'authoring\n');
   write(devTemplate, '.nestled-updates/upgrade-notes/n.yaml', 'id: n\n');
 
@@ -1478,6 +1539,7 @@ projects:
   // excluded wiring / embedded lib / dev tooling NOT mirrored
   assert.ok(!fs.existsSync(path.join(template, 'nx.json')));
   assert.ok(!fs.existsSync(path.join(template, 'libs/data-browser/src/index.ts')));
+  assert.ok(!fs.existsSync(path.join(template, 'libs/access-control/src/index.ts')));
   assert.ok(!fs.existsSync(path.join(template, '.cursor/skills/foo.md')));
   // template-only files preserved (never deleted); product one is reported, excluded log is not
   assert.equal(read('apps/web/routes/only-here.tsx'), 'export default 1\n');
