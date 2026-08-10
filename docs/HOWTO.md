@@ -50,7 +50,7 @@ Promotion reads from `promotion.source` in `upgrader.config.yaml`, currently `..
 
 Promotion is an **import-aware file mirror**, not a patch apply, so it never blocks on conflicts. It copies every tracked source file from `nestled-dev-template` into `nestled-template` except:
 
-- imported-vs-embedded wiring: `package.json`, lockfiles, `nx.json`, `tsconfig.base.json`, `libs/data-browser/**`, `libs/shared-components/**`
+- imported-vs-embedded wiring: `package.json`, lockfiles, `nx.json`, `tsconfig.base.json`, `libs/data-browser/**`, `libs/shared-components/**`, `libs/access-control/**`
 - template-owned docs/identity: `README.md`, `CLAUDE.md`, `WARP.md`, `AGENTS.md`, `sonar-project.properties`, `docs/template/**`, `docs/dev/**`
 - dev-authoring tooling the cloneable template never carries: `.cursor/**`, `.agents/**`, `.opencode/**`, `ai-docs/**`, `plans/**`, `tools/ai-migrations/**`, …
 
