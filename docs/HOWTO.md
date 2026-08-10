@@ -56,7 +56,7 @@ Promotion is an **import-aware file mirror**, not a patch apply, so it never blo
 
 On the way in it rewrites the two per-clone seams: `@nestled-template/data-browser` → the `@nestledjs/data-browser` package, and the Compose project `name:` → `nestled-template`. Extend the exclude/substitution sets under `promotion.mirror` in `upgrader.config.yaml`.
 
-The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` are preserved and listed under "Template-only files" in the report. Package versions still flow through `packageReleases` dependency bumps, handled separately, not copied source.
+The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` are preserved and listed under "Template-only files" in the report. Published package sources (`data-browser`, `shared-components`, and `access-control`) are excluded; their versions flow through dependency synchronization in root or app-level package manifests, not copied source.
 
 Because promotion mirrors dev-template's committed state, any fix must originate in `nestled-dev-template` and flow down — do not patch `nestled-template` directly, or the next promotion will revert it.
 
