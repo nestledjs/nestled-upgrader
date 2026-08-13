@@ -1714,7 +1714,7 @@ test('the promotion report records the resolved ref and full sha', () => {
 
 // fleet-upstream #103: the file mirror must recognize the app-level workspace→published seam so a
 // correct clone-template mirrors clean, while still surfacing genuine (non-seam) manifest drift.
-function seamFixture(templateWebDeps) {
+function seamFixture(templateWebDeps, devAcRef = 'workspace:*') {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-seam-'));
   const root = path.join(parent, 'nestled-upgrader');
   const devTemplate = path.join(parent, 'nestled-dev-template');
@@ -1727,11 +1727,11 @@ function seamFixture(templateWebDeps) {
     fs.writeFileSync(abs, content);
   };
 
-  // dev-template consumes the lib via workspace:*; the clone-template pins the published range.
+  // dev-template consumes the lib via a workspace ref; the clone-template pins the published range.
   write(devTemplate, 'libs/access-control/package.json',
     `${JSON.stringify({ name: '@nestledjs/access-control', version: '0.0.3' }, null, 2)}\n`);
   write(devTemplate, 'apps/web/package.json',
-    `${JSON.stringify({ name: 'web', dependencies: { '@nestledjs/access-control': 'workspace:*', clsx: '^2.1.1' } }, null, 2)}\n`);
+    `${JSON.stringify({ name: 'web', dependencies: { '@nestledjs/access-control': devAcRef, clsx: '^2.1.1' } }, null, 2)}\n`);
   write(template, 'apps/web/package.json',
     `${JSON.stringify({ name: 'web', dependencies: templateWebDeps }, null, 2)}\n`);
 
@@ -1762,7 +1762,7 @@ projects:
     forkedAreas: []
     verification: []
 `);
-  return { root, config: loadConfig(root) };
+  return { root, config: loadConfig(root), devTemplate };
 }
 
 test('promotion recognizes the app-level workspace→published seam and reports no drift (#103)', () => {
@@ -1782,6 +1782,34 @@ test('promotion still reports a genuine (non-seam) app-manifest change (#103 gua
   assert.ok(
     result.changes.some((c) => c.path === 'apps/web/package.json'),
     'a real dependency difference must still be reported as drift'
+  );
+});
+
+test('the seam substitution reads lib versions from the committed ref, not the working tree (#103)', () => {
+  // The mirror copies files from origin/develop, so the workspace→published version must come from
+  // the same committed state — a dirty or branched dev-template checkout must not skew it.
+  const { root, config, devTemplate } = seamFixture({ '@nestledjs/access-control': '^0.0.3', clsx: '^2.1.1' });
+  // Dirty the working tree with a version that does NOT match the template. If the substitution read
+  // the working tree, apps/web would translate to ^9.9.9 and report as drift against the template's ^0.0.3.
+  fs.writeFileSync(
+    path.join(devTemplate, 'libs/access-control/package.json'),
+    `${JSON.stringify({ name: '@nestledjs/access-control', version: '9.9.9' }, null, 2)}\n`
+  );
+  const result = mirrorTemplateFromSource(config, root, { dryRun: true });
+  assert.ok(
+    !result.changes.some((c) => c.path === 'apps/web/package.json'),
+    'the committed 0.0.3 must win over the dirty 9.9.9 working-tree version'
+  );
+});
+
+test('the seam substitution neutralizes non-star workspace protocols (#103)', () => {
+  // The old literal `"name": "workspace:*"` match missed `workspace:^`/`workspace:~` and minified
+  // spacing; the regex form must translate any workspace protocol to the published range.
+  const { root, config } = seamFixture({ '@nestledjs/access-control': '^0.0.3', clsx: '^2.1.1' }, 'workspace:^');
+  const result = mirrorTemplateFromSource(config, root, { dryRun: true });
+  assert.ok(
+    !result.changes.some((c) => c.path === 'apps/web/package.json'),
+    'a `workspace:^` ref must be neutralized to the published ^0.0.3 the same as `workspace:*`'
   );
 });
 
