@@ -13,6 +13,7 @@ import {
   loadConfig,
   loadUpgrades,
   collectExcludedFileDrift,
+  convergenceStatus,
   mirrorTemplateFromSource,
   normalizeUpgradeLogs,
   planAll,
@@ -1959,4 +1960,102 @@ test('tsconfig path target ORDER is significant and reported, not normalised awa
 
   assert.equal(ts.differing.length, 1);
   assert.equal(ts.differing[0].key, '@x/a');
+});
+
+test('convergence-status reports behind/current/never against the template HEAD', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-conv-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  const repos = {
+    'behind-repo': path.join(parent, 'behind-repo'),
+    'current-repo': path.join(parent, 'current-repo'),
+    'never-repo': path.join(parent, 'never-repo'),
+    'orphan-repo': path.join(parent, 'orphan-repo')
+  };
+  for (const d of [root, template, ...Object.values(repos)]) fs.mkdirSync(d, { recursive: true });
+
+  const initRepo = (dir) => {
+    git(dir, ['init']);
+    git(dir, ['config', 'user.email', 'test@example.com']);
+    git(dir, ['config', 'user.name', 'Test User']);
+    git(dir, ['config', 'commit.gpgsign', 'false']);
+  };
+
+  // template: two commits, so a marker at the first is "behind by 1".
+  initRepo(template);
+  fs.writeFileSync(path.join(template, 'a.txt'), '1\n');
+  git(template, ['add', '-A']);
+  git(template, ['commit', '-m', 'one']);
+  const firstSha = gitOutput(template, ['rev-parse', 'HEAD']);
+  fs.writeFileSync(path.join(template, 'a.txt'), '2\n');
+  git(template, ['add', '-A']);
+  git(template, ['commit', '-m', 'two']);
+  const headSha = gitOutput(template, ['rev-parse', 'HEAD']);
+
+  // A commit that exists in the object store but is NOT in HEAD's history — the shape a squash
+  // merge leaves behind. A marker pointing here must read as unknown, not as a behind-count.
+  git(template, ['checkout', '-b', 'side', firstSha]);
+  fs.writeFileSync(path.join(template, 'b.txt'), 'side\n');
+  git(template, ['add', '-A']);
+  git(template, ['commit', '-m', 'side-only']);
+  const sideSha = gitOutput(template, ['rev-parse', 'HEAD']);
+  git(template, ['checkout', '-']);
+
+  const writeMarker = (dir, sha) => {
+    fs.mkdirSync(path.join(dir, '.nestled'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.nestled', 'converged-at'), `template-sha: ${sha}\ndate: 2026-08-13\n`);
+  };
+  for (const dir of Object.values(repos)) {
+    initRepo(dir);
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'x\n');
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-m', 'init']);
+  }
+  writeMarker(repos['behind-repo'], firstSha);
+  writeMarker(repos['current-repo'], headSha);
+  writeMarker(repos['orphan-repo'], sideSha);
+  // never-repo: intentionally no marker.
+
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+  - name: behind-repo
+    path: ../behind-repo
+    forkedAreas: []
+    verification: []
+  - name: current-repo
+    path: ../current-repo
+    forkedAreas: []
+    verification: []
+  - name: never-repo
+    path: ../never-repo
+    forkedAreas: []
+    verification: []
+  - name: orphan-repo
+    path: ../orphan-repo
+    forkedAreas: []
+    verification: []
+`);
+  const config = loadConfig(root);
+  const result = convergenceStatus(config, root);
+
+  assert.equal(result.templateHeadShort, headSha.slice(0, 7));
+  const byName = Object.fromEntries(result.rows.map((row) => [row.project, row]));
+  assert.equal(byName['behind-repo'].state, 'behind');
+  assert.equal(byName['behind-repo'].behind, 1);
+  assert.equal(byName['current-repo'].state, 'current');
+  assert.equal(byName['never-repo'].state, 'never');
+  assert.equal(byName['orphan-repo'].state, 'unknown');
+  assert.equal(byName['orphan-repo'].sha, sideSha.slice(0, 7));
 });
