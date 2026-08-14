@@ -1969,7 +1969,8 @@ test('convergence-status reports behind/current/never against the template HEAD'
   const repos = {
     'behind-repo': path.join(parent, 'behind-repo'),
     'current-repo': path.join(parent, 'current-repo'),
-    'never-repo': path.join(parent, 'never-repo')
+    'never-repo': path.join(parent, 'never-repo'),
+    'orphan-repo': path.join(parent, 'orphan-repo')
   };
   for (const d of [root, template, ...Object.values(repos)]) fs.mkdirSync(d, { recursive: true });
 
@@ -1991,6 +1992,15 @@ test('convergence-status reports behind/current/never against the template HEAD'
   git(template, ['commit', '-m', 'two']);
   const headSha = gitOutput(template, ['rev-parse', 'HEAD']);
 
+  // A commit that exists in the object store but is NOT in HEAD's history — the shape a squash
+  // merge leaves behind. A marker pointing here must read as unknown, not as a behind-count.
+  git(template, ['checkout', '-b', 'side', firstSha]);
+  fs.writeFileSync(path.join(template, 'b.txt'), 'side\n');
+  git(template, ['add', '-A']);
+  git(template, ['commit', '-m', 'side-only']);
+  const sideSha = gitOutput(template, ['rev-parse', 'HEAD']);
+  git(template, ['checkout', '-']);
+
   const writeMarker = (dir, sha) => {
     fs.mkdirSync(path.join(dir, '.nestled'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.nestled', 'converged-at'), `template-sha: ${sha}\ndate: 2026-08-13\n`);
@@ -2003,6 +2013,7 @@ test('convergence-status reports behind/current/never against the template HEAD'
   }
   writeMarker(repos['behind-repo'], firstSha);
   writeMarker(repos['current-repo'], headSha);
+  writeMarker(repos['orphan-repo'], sideSha);
   // never-repo: intentionally no marker.
 
   fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
@@ -2031,6 +2042,10 @@ projects:
     path: ../never-repo
     forkedAreas: []
     verification: []
+  - name: orphan-repo
+    path: ../orphan-repo
+    forkedAreas: []
+    verification: []
 `);
   const config = loadConfig(root);
   const result = convergenceStatus(config, root);
@@ -2041,4 +2056,6 @@ projects:
   assert.equal(byName['behind-repo'].behind, 1);
   assert.equal(byName['current-repo'].state, 'current');
   assert.equal(byName['never-repo'].state, 'never');
+  assert.equal(byName['orphan-repo'].state, 'unknown');
+  assert.equal(byName['orphan-repo'].sha, sideSha.slice(0, 7));
 });
