@@ -58,12 +58,12 @@ Inside each downstream repo:
 template:
   name: nestled-template
   path: ../nestled-template
-  mainBranch: main
+  mainBranch: develop
 
 projects:
   - name: project-a
     path: ../project-a
-    defaultBranch: main
+    defaultBranch: develop
     forkedAreas: []
     verification:
       - pnpm lint
@@ -71,7 +71,7 @@ projects:
 
   - name: project-b
     path: ../project-b
-    defaultBranch: main
+    defaultBranch: develop
     forkedAreas:
       - auth
     verification:

@@ -31,7 +31,7 @@ promotion:
 template:
   name: my-template
   path: ../my-template
-  mainBranch: main
+  mainBranch: develop
 
 # Optional: auto-discover sibling directories as projects.
 # Repos listed here are excluded from discovery.
@@ -44,7 +44,7 @@ projects:
   # The canonical template itself — receives promoted changes first.
   - name: my-template
     path: ../my-template
-    defaultBranch: main
+    defaultBranch: develop
     role: template-promotion
     autoPR: true
     # Paths excluded from raw patch promotion (managed separately).
@@ -59,7 +59,7 @@ projects:
   # A downstream product project.
   - name: my-app
     path: ../my-app
-    defaultBranch: main
+    defaultBranch: develop
     # Mark areas your project has diverged from the template.
     forkedAreas: []
     # Commands run to verify the project after applying an upgrade.
