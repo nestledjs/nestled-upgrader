@@ -15,6 +15,8 @@ import {
   collectExcludedFileDrift,
   convergenceStatus,
   enforcementDrift,
+  expectedPorts,
+  portConformance,
   exceptionInventory,
   mirrorTemplateFromSource,
   normalizeUpgradeLogs,
@@ -2135,4 +2137,63 @@ test('exceptionInventory reports an unreadable exception file rather than skippi
   assert.equal(held.length, 1);
   assert.equal(held[0].label, 'public-operations');
   assert.equal(held[0].unreadable, true);
+});
+
+test('expectedPorts follows the block formula — app ports stride 1, infra 10', () => {
+  assert.deepEqual(expectedPorts(0), {
+    PORT: 3000,
+    WEB_PORT: 4200,
+    WEB_PREVIEW_PORT: 4300,
+    POSTGRES_PORT: 5432,
+    POSTGRES_TEST_PORT: 5433,
+    REDIS_PORT: 6379,
+    MAILHOG_SMTP_PORT: 1025,
+    MAILHOG_UI_PORT: 8025
+  });
+  // A block's dev/test Postgres pair must not overlap the next block's — that is why infra strides 10.
+  assert.equal(expectedPorts(2).POSTGRES_PORT, 5452);
+  assert.equal(expectedPorts(2).POSTGRES_TEST_PORT, 5453);
+  assert.ok(expectedPorts(2).POSTGRES_TEST_PORT < expectedPorts(3).POSTGRES_PORT);
+});
+
+test('portConformance reports a wrong port, and treats unset as claiming block 0', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ports-'));
+  // PORT is wrong; WEB_PORT is right; everything else is unset and therefore defaults to block 0.
+  fs.writeFileSync(
+    path.join(repo, '.env'),
+    ['DATABASE_URL=postgresql://user:secret@localhost:5432/db', 'PORT=3000', 'WEB_PORT=4205'].join('\n')
+  );
+
+  const result = portConformance(repo, 5);
+
+  assert.equal(result.state, 'drift');
+  assert.deepEqual(result.mismatched, [{ key: 'PORT', declared: 3000, expected: 3005 }]);
+  const unsetKeys = result.unset.map((entry) => entry.key);
+  assert.ok(!unsetKeys.includes('PORT'));
+  assert.ok(!unsetKeys.includes('WEB_PORT'));
+  // Silence is not neutral: compose defaults land on the template's ports.
+  const postgres = result.unset.find((entry) => entry.key === 'POSTGRES_PORT');
+  assert.deepEqual(postgres, { key: 'POSTGRES_PORT', expected: 5482, fallsBackTo: 5432 });
+});
+
+test('portConformance passes a fully conformant repo and flags an unassigned one', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ports-ok-'));
+  const lines = Object.entries(expectedPorts(2)).map(([key, value]) => `${key}=${value}`);
+  fs.writeFileSync(path.join(repo, '.env'), lines.join('\n'));
+
+  assert.equal(portConformance(repo, 2).state, 'ok');
+  assert.equal(portConformance(repo, undefined).state, 'unassigned');
+});
+
+test('portConformance reads only port keys, never other .env values', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ports-secret-'));
+  fs.writeFileSync(
+    path.join(repo, '.env'),
+    ['JWT_SECRET=do-not-read-me', 'PORT=3002', 'SMTP_PASS=also-secret'].join('\n')
+  );
+
+  const serialized = JSON.stringify(portConformance(repo, 2));
+
+  assert.ok(!serialized.includes('do-not-read-me'));
+  assert.ok(!serialized.includes('also-secret'));
 });
