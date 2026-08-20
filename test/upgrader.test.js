@@ -2185,6 +2185,23 @@ test('portConformance passes a fully conformant repo and flags an unassigned one
   assert.equal(portConformance(repo, undefined).state, 'unassigned');
 });
 
+// Block 0 IS the default every unset variable lands on, so silence there is conformant. Recording
+// it as drift would count a repo as drifted while printing nothing to explain why — the state and
+// the output have to agree.
+test('portConformance treats unset as conformant for block 0 and as drift elsewhere', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ports-zero-'));
+  fs.writeFileSync(path.join(repo, '.env'), 'PORT=3000\n');
+
+  const atZero = portConformance(repo, 0);
+  assert.equal(atZero.state, 'ok');
+  assert.deepEqual(atZero.unset, []);
+
+  // The same file against a non-zero block: every unset variable is now claiming block 0's port.
+  const atFive = portConformance(repo, 5);
+  assert.equal(atFive.state, 'drift');
+  assert.ok(atFive.unset.length > 0);
+});
+
 test('portConformance reads only port keys, never other .env values', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ports-secret-'));
   fs.writeFileSync(
