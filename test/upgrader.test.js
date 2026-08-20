@@ -14,6 +14,8 @@ import {
   loadUpgrades,
   collectExcludedFileDrift,
   convergenceStatus,
+  enforcementDrift,
+  exceptionInventory,
   mirrorTemplateFromSource,
   normalizeUpgradeLogs,
   planAll,
@@ -2058,4 +2060,79 @@ projects:
   assert.equal(byName['never-repo'].state, 'never');
   assert.equal(byName['orphan-repo'].state, 'unknown');
   assert.equal(byName['orphan-repo'].sha, sideSha.slice(0, 7));
+});
+
+test('enforcementDrift finds edited, missing and extra enforcement files', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-drift-'));
+  const template = path.join(parent, 'template');
+  const repo = path.join(parent, 'repo');
+  for (const base of [template, repo]) {
+    fs.mkdirSync(path.join(base, 'scripts'), { recursive: true });
+    fs.mkdirSync(path.join(base, 'tools'), { recursive: true });
+  }
+
+  fs.writeFileSync(path.join(template, 'scripts', 'doctor.ts'), 'same\n');
+  fs.writeFileSync(path.join(template, 'scripts', 'doctor-auth-analysis.ts'), 'original\n');
+  fs.writeFileSync(path.join(template, 'scripts', 'doctor-module-analysis.ts'), 'present\n');
+  fs.writeFileSync(path.join(template, 'tools', 'verify-fragment-coverage.ts'), 'verify\n');
+  // Not enforcement: a script that is not a doctor and a tool that is not a verifier.
+  fs.writeFileSync(path.join(template, 'scripts', 'seed.ts'), 'ignored\n');
+  fs.writeFileSync(path.join(template, 'tools', 'helper.ts'), 'ignored\n');
+
+  fs.writeFileSync(path.join(repo, 'scripts', 'doctor.ts'), 'same\n');
+  fs.writeFileSync(path.join(repo, 'scripts', 'doctor-auth-analysis.ts'), 'EDITED LOCALLY\n');
+  // doctor-module-analysis.ts deliberately absent — deleting a check is the quietest way to pass it.
+  fs.writeFileSync(path.join(repo, 'tools', 'verify-fragment-coverage.ts'), 'verify\n');
+  fs.writeFileSync(path.join(repo, 'scripts', 'doctor-local-extra.ts'), 'repo only\n');
+
+  const drift = enforcementDrift(template, repo);
+
+  assert.equal(drift.checked, 4);
+  assert.deepEqual(drift.differing, ['scripts/doctor-auth-analysis.ts']);
+  assert.deepEqual(drift.missing, ['scripts/doctor-module-analysis.ts']);
+  assert.deepEqual(drift.extra, ['scripts/doctor-local-extra.ts']);
+});
+
+test('exceptionInventory counts every sanctioned escape hatch a repo holds', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-exceptions-'));
+  const security = path.join(repo, '.nestled-updates', 'security');
+  fs.mkdirSync(security, { recursive: true });
+
+  // nested: file -> operation -> reason
+  fs.writeFileSync(
+    path.join(security, 'permission-exemptions.json'),
+    JSON.stringify({ 'a.resolver.ts': { one: 'why', two: 'why' }, 'b.resolver.ts': { three: 'why' } })
+  );
+  // flat: one key per entry
+  fs.writeFileSync(
+    path.join(repo, '.nestled-updates', 'sdk-contract-baseline.json'),
+    JSON.stringify({ 'op-one': {}, 'op-two': {} })
+  );
+  // posture reports its value, not a count — "authenticated" is the fact worth seeing.
+  fs.writeFileSync(
+    path.join(security, 'generated-crud-posture.json'),
+    JSON.stringify({ posture: 'authenticated', reason: 'rollback' })
+  );
+
+  const held = exceptionInventory(repo);
+  const byLabel = Object.fromEntries(held.map((entry) => [entry.label, entry]));
+
+  assert.equal(byLabel['permission-exemptions'].entries, 3);
+  assert.equal(byLabel['sdk-contract-baseline'].entries, 2);
+  assert.equal(byLabel['generated-crud-posture'].detail, 'authenticated');
+  // Absent files are not "zero exceptions" rows — they are simply not held.
+  assert.equal(byLabel['public-operations'], undefined);
+});
+
+test('exceptionInventory reports an unreadable exception file rather than skipping it', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-exceptions-bad-'));
+  const security = path.join(repo, '.nestled-updates', 'security');
+  fs.mkdirSync(security, { recursive: true });
+  fs.writeFileSync(path.join(security, 'public-operations.json'), '{ not json');
+
+  const held = exceptionInventory(repo);
+
+  assert.equal(held.length, 1);
+  assert.equal(held[0].label, 'public-operations');
+  assert.equal(held[0].unreadable, true);
 });
