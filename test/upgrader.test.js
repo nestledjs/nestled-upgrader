@@ -16,6 +16,8 @@ import {
   convergenceStatus,
   enforcementDrift,
   enforcementVersion,
+  inlineCommentRisks,
+  normalizeUpgradeLog,
   expectedPorts,
   portConformance,
   exceptionInventory,
@@ -2295,4 +2297,82 @@ test('enforcementVersion tells an unreadable manifest apart from a deliberate no
   assert.deepEqual(enforcementVersion(broken, withPin('fine', JSON.stringify({}))), {
     state: 'template-unreadable'
   });
+});
+
+test('inlineCommentRisks finds plain scalars that YAML would truncate at a hash', () => {
+  const risks = inlineCommentRisks(
+    [
+      'upgrades:',
+      '  some-id:',
+      '    decision: adapted',
+      '    reason: Converged in PR #51. DTOs moved to admin-billing.dto.ts.',
+      '    quoted: "Converged in PR #51. Safe because it is quoted."',
+      "    single: 'Also safe #52.'",
+      '    hashless: Converged in PR 51, no hash here.',
+      '    fragment: uses#hash-with-no-leading-space',
+      '    empty:'
+    ].join('\n')
+  );
+
+  assert.equal(risks.length, 1);
+  assert.equal(risks[0].key, 'reason');
+  assert.equal(risks[0].line, 4);
+  assert.equal(risks[0].kept, 'Converged in PR');
+  assert.match(risks[0].dropped, /^#51\. DTOs moved/);
+
+  // A hash with no leading whitespace is part of the scalar, not a comment -- flagging it would
+  // train readers to ignore the warning.
+  assert.equal(inlineCommentRisks('    fragment: uses#hash').length, 0);
+});
+
+test('inlineCommentRisks leaves block scalars alone, where a hash is text', () => {
+  // lib/yaml.js round-trips these bodies intact, so refusing them would be a false alarm -- and a
+  // guard that cries wolf gets bypassed, costing more than the bug it prevents.
+  const literal = inlineCommentRisks(
+    ['upgrades:', '  x:', '    notes: |', '      reason: Converged in PR #51', '      more text'].join('\n')
+  );
+  assert.deepEqual(literal, []);
+
+  assert.deepEqual(
+    inlineCommentRisks(['upgrades:', '  x:', '    notes: >-', '      see PR #9 for detail'].join('\n')),
+    []
+  );
+
+  // Blank lines belong to the block; content indented no further than the key ends it, and a real
+  // risk after that point must still be caught.
+  const resumes = inlineCommentRisks(
+    [
+      'upgrades:',
+      '  x:',
+      '    notes: |',
+      '      body #1',
+      '',
+      '      still body #2',
+      '    reason: Done in PR #51. Detail.'
+    ].join('\n')
+  );
+  assert.equal(resumes.length, 1);
+  assert.equal(resumes[0].key, 'reason');
+});
+
+test('every ledger write path refuses to truncate, not just normalize', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-risk-'));
+  const project = { name: 'repo-a', path: 'downstream/repo-a' };
+  const dir = path.join(root, 'downstream', 'repo-a', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'upgrade-log.yaml');
+  const before = 'upgrades:\n    some-id:\n        decision: adapted\n        reason: Done in PR #51. Details that must survive.\n';
+  fs.writeFileSync(file, before);
+
+  const result = normalizeUpgradeLog(project, root);
+  assert.equal(result.changed, false);
+  assert.equal(result.risks.length, 1);
+
+  // The hole this closes: initializeUpgradeLog does its own read-modify-write, so a guard living
+  // only in normalizeUpgradeLog would let `run` truncate the file anyway.
+  assert.throws(() => writeUpgradeLog(project, { upgrades: {} }, root), /would lose text/);
+
+  // Whichever path was taken, the sentence is still on disk and recoverable by quoting it.
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.match(fs.readFileSync(file, 'utf8'), /Details that must survive/);
 });
