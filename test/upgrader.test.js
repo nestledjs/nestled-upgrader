@@ -16,6 +16,8 @@ import {
   convergenceStatus,
   enforcementDrift,
   enforcementVersion,
+  inlineCommentRisks,
+  normalizeUpgradeLog,
   expectedPorts,
   portConformance,
   exceptionInventory,
@@ -2295,4 +2297,51 @@ test('enforcementVersion tells an unreadable manifest apart from a deliberate no
   assert.deepEqual(enforcementVersion(broken, withPin('fine', JSON.stringify({}))), {
     state: 'template-unreadable'
   });
+});
+
+test('inlineCommentRisks finds plain scalars that YAML would truncate at a hash', () => {
+  const risks = inlineCommentRisks(
+    [
+      'upgrades:',
+      '  some-id:',
+      '    decision: adapted',
+      '    reason: Converged in PR #51. DTOs moved to admin-billing.dto.ts.',
+      '    quoted: "Converged in PR #51. Safe because it is quoted."',
+      "    single: 'Also safe #52.'",
+      '    hashless: Converged in PR 51, no hash here.',
+      '    fragment: uses#hash-with-no-leading-space',
+      '  other:',
+      '    reason: |',
+      '      Block scalars keep #hashes too.'
+    ].join('\n')
+  );
+
+  assert.equal(risks.length, 1);
+  assert.equal(risks[0].key, 'reason');
+  assert.equal(risks[0].line, 4);
+  assert.equal(risks[0].kept, 'Converged in PR');
+  assert.match(risks[0].dropped, /^#51\. DTOs moved/);
+
+  // A hash with no leading whitespace is part of the scalar, not a comment -- flagging it would
+  // train readers to ignore the warning.
+  assert.equal(inlineCommentRisks('    fragment: uses#hash').length, 0);
+});
+
+test('normalizeUpgradeLog refuses to rewrite a ledger it would truncate', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-risk-'));
+  const project = { name: 'repo-a', path: 'downstream/repo-a' };
+  const dir = path.join(root, 'downstream', 'repo-a', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'upgrade-log.yaml');
+  // Deliberately unformatted, so a rewrite would definitely fire if not refused.
+  const before = 'upgrades:\n    some-id:\n        decision: adapted\n        reason: Done in PR #51. Details that must survive.\n';
+  fs.writeFileSync(file, before);
+
+  const result = normalizeUpgradeLog(project, root);
+
+  assert.equal(result.changed, false);
+  assert.equal(result.risks.length, 1);
+  // The point of the refusal: the sentence is still on disk, recoverable by quoting it.
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.match(fs.readFileSync(file, 'utf8'), /Details that must survive/);
 });
