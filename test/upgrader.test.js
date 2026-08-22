@@ -15,6 +15,7 @@ import {
   collectExcludedFileDrift,
   convergenceStatus,
   enforcementDrift,
+  enforcementVersion,
   expectedPorts,
   portConformance,
   exceptionInventory,
@@ -2213,4 +2214,30 @@ test('portConformance reads only port keys, never other .env values', () => {
 
   assert.ok(!serialized.includes('do-not-read-me'));
   assert.ok(!serialized.includes('also-secret'));
+});
+
+test('enforcementVersion catches a repo pinned to a superseded enforcement package', () => {
+  const template = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-tpl-'));
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-stale-'));
+  const current = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-current-'));
+  const none = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-none-'));
+
+  const manifest = (dir, pin) =>
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify(pin ? { devDependencies: { '@nestledjs/doctor': pin } } : { devDependencies: {} })
+    );
+  manifest(template, '0.1.2');
+  manifest(stale, '0.1.1');
+  manifest(current, '0.1.2');
+  manifest(none, null);
+
+  // The case this exists for: identical files, no extra checks, still the wrong build of the checks.
+  assert.deepEqual(enforcementDrift(template, stale), { checked: 0, differing: [], missing: [], extra: [] });
+  assert.deepEqual(enforcementVersion(template, stale), { state: 'drift', expected: '0.1.2', actual: '0.1.1' });
+
+  assert.equal(enforcementVersion(template, current).state, 'ok');
+  assert.deepEqual(enforcementVersion(template, none), { state: 'absent', expected: '0.1.2' });
+  // A template that pins nothing cannot judge anyone — silence beats a false accusation.
+  assert.deepEqual(enforcementVersion(none, stale), { state: 'untracked' });
 });
