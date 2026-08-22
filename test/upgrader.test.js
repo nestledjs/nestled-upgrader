@@ -2216,28 +2216,56 @@ test('portConformance reads only port keys, never other .env values', () => {
   assert.ok(!serialized.includes('also-secret'));
 });
 
-test('enforcementVersion catches a repo pinned to a superseded enforcement package', () => {
-  const template = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-tpl-'));
-  const stale = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-stale-'));
-  const current = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-current-'));
-  const none = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-ev-none-'));
-
-  const manifest = (dir, pin) =>
+test('enforcementVersion reads what the lockfile resolved, not what the manifest asked for', () => {
+  const mk = (name, spec, resolved) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nestled-ev-${name}-`));
     fs.writeFileSync(
       path.join(dir, 'package.json'),
-      JSON.stringify(pin ? { devDependencies: { '@nestledjs/doctor': pin } } : { devDependencies: {} })
+      JSON.stringify(spec ? { devDependencies: { '@nestledjs/doctor': spec } } : { devDependencies: {} })
     );
-  manifest(template, '0.1.2');
-  manifest(stale, '0.1.1');
-  manifest(current, '0.1.2');
-  manifest(none, null);
+    if (resolved) {
+      fs.writeFileSync(
+        path.join(dir, 'pnpm-lock.yaml'),
+        [
+          'importers:',
+          '  .:',
+          '    devDependencies:',
+          "      '@nestledjs/doctor':",
+          `        specifier: ${spec}`,
+          `        version: ${resolved}(@prisma/internals@7.9.1(typescript@5.9.3))`
+        ].join('\n')
+      );
+    }
+    return dir;
+  };
+
+  const template = mk('tpl', '0.1.2', '0.1.2');
 
   // The case this exists for: identical files, no extra checks, still the wrong build of the checks.
+  const stale = mk('stale', '0.1.1', '0.1.1');
   assert.deepEqual(enforcementDrift(template, stale), { checked: 0, differing: [], missing: [], extra: [] });
   assert.deepEqual(enforcementVersion(template, stale), { state: 'drift', expected: '0.1.2', actual: '0.1.1' });
 
-  assert.equal(enforcementVersion(template, current).state, 'ok');
-  assert.deepEqual(enforcementVersion(template, none), { state: 'absent', expected: '0.1.2' });
-  // A template that pins nothing cannot judge anyone — silence beats a false accusation.
-  assert.deepEqual(enforcementVersion(none, stale), { state: 'untracked' });
+  // A caret satisfies the manifest while resolving to something older -- the manifest string alone
+  // would read as a match against a template pinned to an exact version.
+  const caretStale = mk('caret-stale', '^0.1.0', '0.1.1');
+  assert.equal(enforcementVersion(template, caretStale).state, 'drift');
+
+  // ...and the same caret resolving forward is fine, though the strings still differ.
+  const caretOk = mk('caret-ok', '^0.1.0', '0.1.2');
+  assert.equal(enforcementVersion(template, caretOk).state, 'ok');
+
+  // Ahead is not drift: taking a fix first is not a defect.
+  assert.equal(enforcementVersion(template, mk('ahead', '0.2.0', '0.2.0')).state, 'ahead');
+  // Ordering is numeric, not lexical: '0.1.10' must beat '0.1.9'.
+  assert.equal(enforcementVersion(template, mk('double-digit', '0.1.10', '0.1.10')).state, 'ahead');
+
+  assert.deepEqual(enforcementVersion(template, mk('none', null, null)), { state: 'absent', expected: '0.1.2' });
+  assert.deepEqual(enforcementVersion(template, mk('nolock', '0.1.2', null)), {
+    state: 'ok',
+    expected: '0.1.2',
+    actual: '0.1.2'
+  });
+  // A template that pins nothing cannot judge anyone -- silence beats a false accusation.
+  assert.deepEqual(enforcementVersion(mk('bare', null, null), stale), { state: 'untracked' });
 });
