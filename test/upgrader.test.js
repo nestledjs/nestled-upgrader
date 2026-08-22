@@ -2269,3 +2269,30 @@ test('enforcementVersion reads what the lockfile resolved, not what the manifest
   // A template that pins nothing cannot judge anyone -- silence beats a false accusation.
   assert.deepEqual(enforcementVersion(mk('bare', null, null), stale), { state: 'untracked' });
 });
+
+test('enforcementVersion tells an unreadable manifest apart from a deliberate non-dependency', () => {
+  const withPin = (name, body) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nestled-ev2-${name}-`));
+    if (body !== null) fs.writeFileSync(path.join(dir, 'package.json'), body);
+    return dir;
+  };
+  const template = withPin('tpl', JSON.stringify({ devDependencies: { '@nestledjs/doctor': '0.1.2' } }));
+
+  // Truncated mid-write, or merged badly. Reporting this as "declares no dependency" would send the
+  // reader to add a dependency that is very likely already there.
+  const broken = withPin('broken', '{ "devDependencies": { "@nestledjs/doctor": ');
+  assert.deepEqual(enforcementVersion(template, broken), { state: 'unreadable', expected: '0.1.2' });
+
+  assert.deepEqual(enforcementVersion(template, withPin('gone', null)), {
+    state: 'no-manifest',
+    expected: '0.1.2'
+  });
+  assert.deepEqual(enforcementVersion(template, withPin('none', JSON.stringify({ devDependencies: {} }))), {
+    state: 'absent',
+    expected: '0.1.2'
+  });
+  // An unreadable template cannot accuse a repo of anything.
+  assert.deepEqual(enforcementVersion(broken, withPin('fine', JSON.stringify({}))), {
+    state: 'template-unreadable'
+  });
+});
