@@ -15,6 +15,7 @@ import {
   collectExcludedFileDrift,
   convergenceStatus,
   enforcementDrift,
+  enforcementVersion,
   expectedPorts,
   portConformance,
   exceptionInventory,
@@ -2213,4 +2214,85 @@ test('portConformance reads only port keys, never other .env values', () => {
 
   assert.ok(!serialized.includes('do-not-read-me'));
   assert.ok(!serialized.includes('also-secret'));
+});
+
+test('enforcementVersion reads what the lockfile resolved, not what the manifest asked for', () => {
+  const mk = (name, spec, resolved) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nestled-ev-${name}-`));
+    fs.writeFileSync(
+      path.join(dir, 'package.json'),
+      JSON.stringify(spec ? { devDependencies: { '@nestledjs/doctor': spec } } : { devDependencies: {} })
+    );
+    if (resolved) {
+      fs.writeFileSync(
+        path.join(dir, 'pnpm-lock.yaml'),
+        [
+          'importers:',
+          '  .:',
+          '    devDependencies:',
+          "      '@nestledjs/doctor':",
+          `        specifier: ${spec}`,
+          `        version: ${resolved}(@prisma/internals@7.9.1(typescript@5.9.3))`
+        ].join('\n')
+      );
+    }
+    return dir;
+  };
+
+  const template = mk('tpl', '0.1.2', '0.1.2');
+
+  // The case this exists for: identical files, no extra checks, still the wrong build of the checks.
+  const stale = mk('stale', '0.1.1', '0.1.1');
+  assert.deepEqual(enforcementDrift(template, stale), { checked: 0, differing: [], missing: [], extra: [] });
+  assert.deepEqual(enforcementVersion(template, stale), { state: 'drift', expected: '0.1.2', actual: '0.1.1' });
+
+  // A caret satisfies the manifest while resolving to something older -- the manifest string alone
+  // would read as a match against a template pinned to an exact version.
+  const caretStale = mk('caret-stale', '^0.1.0', '0.1.1');
+  assert.equal(enforcementVersion(template, caretStale).state, 'drift');
+
+  // ...and the same caret resolving forward is fine, though the strings still differ.
+  const caretOk = mk('caret-ok', '^0.1.0', '0.1.2');
+  assert.equal(enforcementVersion(template, caretOk).state, 'ok');
+
+  // Ahead is not drift: taking a fix first is not a defect.
+  assert.equal(enforcementVersion(template, mk('ahead', '0.2.0', '0.2.0')).state, 'ahead');
+  // Ordering is numeric, not lexical: '0.1.10' must beat '0.1.9'.
+  assert.equal(enforcementVersion(template, mk('double-digit', '0.1.10', '0.1.10')).state, 'ahead');
+
+  assert.deepEqual(enforcementVersion(template, mk('none', null, null)), { state: 'absent', expected: '0.1.2' });
+  assert.deepEqual(enforcementVersion(template, mk('nolock', '0.1.2', null)), {
+    state: 'ok',
+    expected: '0.1.2',
+    actual: '0.1.2'
+  });
+  // A template that pins nothing cannot judge anyone -- silence beats a false accusation.
+  assert.deepEqual(enforcementVersion(mk('bare', null, null), stale), { state: 'untracked' });
+});
+
+test('enforcementVersion tells an unreadable manifest apart from a deliberate non-dependency', () => {
+  const withPin = (name, body) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `nestled-ev2-${name}-`));
+    if (body !== null) fs.writeFileSync(path.join(dir, 'package.json'), body);
+    return dir;
+  };
+  const template = withPin('tpl', JSON.stringify({ devDependencies: { '@nestledjs/doctor': '0.1.2' } }));
+
+  // Truncated mid-write, or merged badly. Reporting this as "declares no dependency" would send the
+  // reader to add a dependency that is very likely already there.
+  const broken = withPin('broken', '{ "devDependencies": { "@nestledjs/doctor": ');
+  assert.deepEqual(enforcementVersion(template, broken), { state: 'unreadable', expected: '0.1.2' });
+
+  assert.deepEqual(enforcementVersion(template, withPin('gone', null)), {
+    state: 'no-manifest',
+    expected: '0.1.2'
+  });
+  assert.deepEqual(enforcementVersion(template, withPin('none', JSON.stringify({ devDependencies: {} }))), {
+    state: 'absent',
+    expected: '0.1.2'
+  });
+  // An unreadable template cannot accuse a repo of anything.
+  assert.deepEqual(enforcementVersion(broken, withPin('fine', JSON.stringify({}))), {
+    state: 'template-unreadable'
+  });
 });
