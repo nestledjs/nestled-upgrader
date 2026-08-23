@@ -18,6 +18,8 @@ import {
   enforcementVersion,
   inlineCommentRisks,
   normalizeUpgradeLog,
+  retireUpgradeRecords,
+  RETIRED_LOG_NAME,
   expectedPorts,
   portConformance,
   exceptionInventory,
@@ -2375,4 +2377,98 @@ test('every ledger write path refuses to truncate, not just normalize', () => {
   // Whichever path was taken, the sentence is still on disk and recoverable by quoting it.
   assert.equal(fs.readFileSync(file, 'utf8'), before);
   assert.match(fs.readFileSync(file, 'utf8'), /Details that must survive/);
+});
+
+test('retireUpgradeRecords keeps the ledger as history and marks why it is stale', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-retire-'));
+  const project = { name: 'repo-a', path: 'downstream/repo-a' };
+  const dir = path.join(root, 'downstream', 'repo-a', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  const ledger = 'template:\n  lastReviewedCommit: 48b22b1\nupgrades:\n  x:\n    reason: "why we adapted it"\n';
+  fs.writeFileSync(path.join(dir, 'upgrade-log.yaml'), ledger);
+  fs.writeFileSync(path.join(dir, 'converged-at'), 'template-sha: 66c88ef\ndate: 2026-08-20\n');
+
+  const dry = retireUpgradeRecords(project, root, { dryRun: true });
+  assert.equal(dry.state, 'would-retire');
+  assert.ok(fs.existsSync(path.join(dir, 'upgrade-log.yaml')), 'dry run must not move anything');
+
+  const result = retireUpgradeRecords(project, root);
+  assert.equal(result.state, 'retired');
+  assert.ok(!fs.existsSync(path.join(dir, 'upgrade-log.yaml')));
+
+  const retired = fs.readFileSync(path.join(dir, RETIRED_LOG_NAME), 'utf8');
+  // The reasons are the whole point of keeping the file.
+  assert.match(retired, /why we adapted it/);
+  // And the header has to defuse the number that keeps sending agents to reconcile it.
+  assert.match(retired, /RETIRED/);
+  assert.match(retired, /lastReviewedCommit/);
+  assert.match(retired, /converged-at/);
+
+  assert.equal(retireUpgradeRecords(project, root).state, 'already-retired');
+});
+
+test('retireUpgradeRecords refuses a repo that never converged', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-retire-no-'));
+  const project = { name: 'repo-b', path: 'downstream/repo-b' };
+  const dir = path.join(root, 'downstream', 'repo-b', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'upgrade-log.yaml'), 'upgrades: {}\n');
+
+  const result = retireUpgradeRecords(project, root);
+
+  // Without a convergence marker this ledger is the repo's only bookkeeping; retiring it would
+  // leave nothing through exactly the window where the record matters most.
+  assert.equal(result.state, 'not-converged');
+  assert.ok(fs.existsSync(path.join(dir, 'upgrade-log.yaml')));
+});
+
+test('retireUpgradeRecords reports the edge states it can return', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-retire-edge-'));
+  const project = { name: 'repo-c', path: 'downstream/repo-c' };
+  const dir = path.join(root, 'downstream', 'repo-c', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+
+  // Neither file present: nothing to retire, and nothing wrong either.
+  assert.equal(retireUpgradeRecords(project, root).state, 'no-ledger');
+
+  fs.writeFileSync(path.join(dir, 'converged-at'), 'template-sha: 66c88ef\ndate: 2026-08-20\n');
+  fs.writeFileSync(path.join(dir, 'upgrade-log.yaml'), 'upgrades:\n  x:\n    reason: "live ledger"\n');
+  fs.writeFileSync(path.join(dir, RETIRED_LOG_NAME), 'upgrades:\n  y:\n    reason: "older retired ledger"\n');
+
+  // Both present is ambiguous, and guessing would destroy one of two historical records.
+  const result = retireUpgradeRecords(project, root);
+  assert.equal(result.state, 'conflict');
+  assert.match(fs.readFileSync(path.join(dir, RETIRED_LOG_NAME), 'utf8'), /older retired ledger/);
+  assert.match(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), /live ledger/);
+});
+
+test('retireUpgradeRecords will not clobber a retired ledger that appears mid-write', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-retire-race-'));
+  const project = { name: 'repo-d', path: 'downstream/repo-d' };
+  const dir = path.join(root, 'downstream', 'repo-d', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'converged-at'), 'template-sha: 66c88ef\ndate: 2026-08-20\n');
+  fs.writeFileSync(path.join(dir, 'upgrade-log.yaml'), 'upgrades:\n  x:\n    reason: "live ledger"\n');
+
+  // Stand in for another process winning the race after the existence check passed.
+  const realReadFileSync = fs.readFileSync;
+  fs.readFileSync = (...args) => {
+    if (String(args[0]).endsWith('upgrade-log.yaml')) {
+      fs.readFileSync = realReadFileSync;
+      fs.writeFileSync(path.join(dir, RETIRED_LOG_NAME), 'written by someone else\n');
+    }
+    return realReadFileSync(...args);
+  };
+
+  let result;
+  try {
+    result = retireUpgradeRecords(project, root);
+  } finally {
+    fs.readFileSync = realReadFileSync;
+  }
+
+  assert.equal(result.state, 'conflict');
+  assert.equal(fs.readFileSync(path.join(dir, RETIRED_LOG_NAME), 'utf8'), 'written by someone else\n');
+  // The live ledger survives: a losing race must not leave the repo with neither file.
+  assert.match(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), /live ledger/);
 });
