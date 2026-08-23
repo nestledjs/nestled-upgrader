@@ -2490,3 +2490,30 @@ test('a retired repo does not get its ledger recreated', () => {
   assert.equal(result, null);
   assert.ok(!fs.existsSync(path.join(dir, 'upgrade-log.yaml')));
 });
+
+test('an unreadable ledger is skipped, not rewritten, and does not abort the caller', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-badledger-'));
+  const project = { name: 'repo-f', path: 'downstream/repo-f' };
+  const dir = path.join(root, 'downstream', 'repo-f', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  // What a stash pop leaves behind. biztobiz carried exactly this, and it aborted every
+  // template promotion fleet-wide until it was resolved.
+  const conflicted = [
+    'upgrades:',
+    '  some-id:',
+    '    status: applied',
+    '<<<<<<< Updated upstream',
+    '=======',
+    '  other-id:',
+    '    status: blocked',
+    '>>>>>>> Stashed changes'
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'upgrade-log.yaml'), conflicted);
+
+  const config = { template: { name: 't', path: '../t' }, projects: [project] };
+  const result = initializeUpgradeLog(project, config, root);
+
+  assert.ok(result.unreadable, 'reports why it skipped');
+  // Untouched: the conflict is the repo owner's to resolve, and rewriting would destroy one side.
+  assert.equal(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), conflicted);
+});
