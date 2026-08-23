@@ -2490,3 +2490,34 @@ test('a retired repo does not get its ledger recreated', () => {
   assert.equal(result, null);
   assert.ok(!fs.existsSync(path.join(dir, 'upgrade-log.yaml')));
 });
+
+test('an unreadable ledger is skipped, not rewritten, and does not abort the caller', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-badledger-'));
+  const project = { name: 'repo-f', path: 'downstream/repo-f' };
+  const dir = path.join(root, 'downstream', 'repo-f', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  // What a stash pop leaves behind. biztobiz carried exactly this, and it aborted every
+  // template promotion fleet-wide until it was resolved.
+  const conflicted = [
+    'upgrades:',
+    '  some-id:',
+    '    status: applied',
+    '<<<<<<< Updated upstream',
+    '=======',
+    '  other-id:',
+    '    status: blocked',
+    '>>>>>>> Stashed changes'
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'upgrade-log.yaml'), conflicted);
+
+  const config = { template: { name: 't', path: '../t' }, projects: [project] };
+  const result = initializeUpgradeLog(project, config, root);
+
+  // Naming the file is the point: the failure this replaces said "Invalid YAML mapping at line
+  // 293" and named nothing, during an operation spanning ten repos.
+  assert.ok(result.unreadable.includes(path.join(dir, 'upgrade-log.yaml')), 'names the file');
+  assert.match(result.unreadable, /line 4/);
+  assert.equal(result.file, path.join(dir, 'upgrade-log.yaml'));
+  // Untouched: the conflict is the repo owner's to resolve, and rewriting would destroy one side.
+  assert.equal(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), conflicted);
+});
