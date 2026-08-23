@@ -19,6 +19,7 @@ import {
   inlineCommentRisks,
   normalizeUpgradeLog,
   retireUpgradeRecords,
+  initializeUpgradeLog,
   RETIRED_LOG_NAME,
   expectedPorts,
   portConformance,
@@ -2471,4 +2472,21 @@ test('retireUpgradeRecords will not clobber a retired ledger that appears mid-wr
   assert.equal(fs.readFileSync(path.join(dir, RETIRED_LOG_NAME), 'utf8'), 'written by someone else\n');
   // The live ledger survives: a losing race must not leave the repo with neither file.
   assert.match(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), /live ledger/);
+});
+
+test('a retired repo does not get its ledger recreated', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-noregen-'));
+  const project = { name: 'repo-e', path: 'downstream/repo-e' };
+  const dir = path.join(root, 'downstream', 'repo-e', '.nestled');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'converged-at'), 'template-sha: 66c88ef\ndate: 2026-08-20\n');
+  fs.writeFileSync(path.join(dir, RETIRED_LOG_NAME), '# RETIRED\nupgrades: {}\n');
+
+  const config = { template: { name: 't', path: '../t' }, projects: [project] };
+  const result = initializeUpgradeLog(project, config, root);
+
+  // Renaming the file was never enough: every write path recreated it, which restored the stale
+  // pointer the retirement existed to remove.
+  assert.equal(result, null);
+  assert.ok(!fs.existsSync(path.join(dir, 'upgrade-log.yaml')));
 });
