@@ -2513,7 +2513,11 @@ test('an unreadable ledger is skipped, not rewritten, and does not abort the cal
   const config = { template: { name: 't', path: '../t' }, projects: [project] };
   const result = initializeUpgradeLog(project, config, root);
 
-  assert.ok(result.unreadable, 'reports why it skipped');
+  // Naming the file is the point: the failure this replaces said "Invalid YAML mapping at line
+  // 293" and named nothing, during an operation spanning ten repos.
+  assert.ok(result.unreadable.includes(path.join(dir, 'upgrade-log.yaml')), 'names the file');
+  assert.match(result.unreadable, /line 4/);
+  assert.equal(result.file, path.join(dir, 'upgrade-log.yaml'));
   // Untouched: the conflict is the repo owner's to resolve, and rewriting would destroy one side.
   assert.equal(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), conflicted);
 });
