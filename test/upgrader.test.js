@@ -2148,6 +2148,7 @@ test('exceptionInventory reports an unreadable exception file rather than skippi
 test('expectedPorts follows the block formula — app ports stride 1, infra 10', () => {
   assert.deepEqual(expectedPorts(0), {
     PORT: 3000,
+    E2E_API_PORT: 3100,
     WEB_PORT: 4200,
     WEB_PREVIEW_PORT: 4300,
     POSTGRES_PORT: 5432,
@@ -2520,4 +2521,47 @@ test('an unreadable ledger is skipped, not rewritten, and does not abort the cal
   assert.equal(result.file, path.join(dir, 'upgrade-log.yaml'));
   // Untouched: the conflict is the repo owner's to resolve, and rewriting would destroy one side.
   assert.equal(fs.readFileSync(path.join(dir, 'upgrade-log.yaml'), 'utf8'), conflicted);
+});
+
+test('every repo gets its own e2e API port, not a shared 3100', () => {
+  // The e2e DATABASE was already per-block (POSTGRES_TEST_PORT); the e2e API was not. Two repos
+  // running e2e at once both landed on 3100, and the harness adopts whatever is listening — so one
+  // repo's specs ran against another repo's database. Same collision biztobiz found as a stray
+  // muzebook_test database in its own Postgres, one layer up.
+  assert.equal(expectedPorts(0).E2E_API_PORT, 3100);
+  assert.equal(expectedPorts(1).E2E_API_PORT, 3101);
+  assert.equal(expectedPorts(8).E2E_API_PORT, 3108);
+
+  // It must not collide with the dev API of any other block: dev APIs occupy 3000-3008, e2e 3100+.
+  const devPorts = new Set([...Array(9).keys()].map((block) => expectedPorts(block).PORT));
+  for (const block of [...Array(9).keys()]) {
+    assert.ok(!devPorts.has(expectedPorts(block).E2E_API_PORT), `block ${block} e2e port hits a dev port`);
+  }
+});
+
+test('portConformance reports a repo that never declared an e2e API port', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-e2eport-'));
+  fs.writeFileSync(path.join(repo, '.env'), ['PORT=3005', 'E2E_API_PORT=3105'].join('\n'));
+  const declared = portConformance(repo, 5);
+  assert.ok(!declared.unset.some((entry) => entry.key === 'E2E_API_PORT'));
+
+  // A digit may follow the first character but not lead: `1FOO=1` is not a name a shell accepts,
+  // so the reader should not accept it either.
+  const oddly = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-e2eport-odd-'));
+  fs.writeFileSync(path.join(oddly, '.env'), ['1FOO=123', 'PORT=3005', 'E2E_API_PORT=3105'].join('\n'));
+  const parsed = portConformance(oddly, 5);
+  // The two declared keys are read (neither appears as unset), and the malformed line is ignored
+  // rather than parsed. Other block-5 ports are absent, so the overall verdict is still drift.
+  const unsetKeys = parsed.unset.map((entry) => entry.key);
+  assert.ok(!unsetKeys.includes('E2E_API_PORT'));
+  assert.ok(!unsetKeys.includes('PORT'));
+  assert.ok(!unsetKeys.includes('1FOO'));
+  assert.deepEqual(parsed.mismatched, []);
+
+  const missing = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-e2eport-missing-'));
+  fs.writeFileSync(path.join(missing, '.env'), 'PORT=3005\n');
+  const gap = portConformance(missing, 5);
+  // Unset is not neutral here: it falls back to 3100, which is block 0's — every other repo's too.
+  const entry = gap.unset.find((item) => item.key === 'E2E_API_PORT');
+  assert.deepEqual(entry, { key: 'E2E_API_PORT', expected: 3105, fallsBackTo: 3100 });
 });
