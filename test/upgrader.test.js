@@ -2545,6 +2545,19 @@ test('portConformance reports a repo that never declared an e2e API port', () =>
   const declared = portConformance(repo, 5);
   assert.ok(!declared.unset.some((entry) => entry.key === 'E2E_API_PORT'));
 
+  // A digit may follow the first character but not lead: `1FOO=1` is not a name a shell accepts,
+  // so the reader should not accept it either.
+  const oddly = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-e2eport-odd-'));
+  fs.writeFileSync(path.join(oddly, '.env'), ['1FOO=123', 'PORT=3005', 'E2E_API_PORT=3105'].join('\n'));
+  const parsed = portConformance(oddly, 5);
+  // The two declared keys are read (neither appears as unset), and the malformed line is ignored
+  // rather than parsed. Other block-5 ports are absent, so the overall verdict is still drift.
+  const unsetKeys = parsed.unset.map((entry) => entry.key);
+  assert.ok(!unsetKeys.includes('E2E_API_PORT'));
+  assert.ok(!unsetKeys.includes('PORT'));
+  assert.ok(!unsetKeys.includes('1FOO'));
+  assert.deepEqual(parsed.mismatched, []);
+
   const missing = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-e2eport-missing-'));
   fs.writeFileSync(path.join(missing, '.env'), 'PORT=3005\n');
   const gap = portConformance(missing, 5);
