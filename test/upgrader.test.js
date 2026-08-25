@@ -19,6 +19,7 @@ import {
   inlineCommentRisks,
   normalizeUpgradeLog,
   retireUpgradeRecords,
+  retireAllUpgradeRecords,
   initializeUpgradeLog,
   RETIRED_LOG_NAME,
   expectedPorts,
@@ -2564,4 +2565,30 @@ test('portConformance reports a repo that never declared an e2e API port', () =>
   // Unset is not neutral here: it falls back to 3100, which is block 0's — every other repo's too.
   const entry = gap.unset.find((item) => item.key === 'E2E_API_PORT');
   assert.deepEqual(entry, { key: 'E2E_API_PORT', expected: 3105, fallsBackTo: 3100 });
+});
+
+test('retireAllUpgradeRecords refuses to touch every repo unless asked', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-retire-scope-'));
+  const config = {
+    template: { name: 't', path: '../t' },
+    projects: [
+      { name: 'repo-a', path: 'downstream/repo-a' },
+      { name: 'repo-b', path: 'downstream/repo-b' }
+    ]
+  };
+
+  // This writes to OTHER repositories' working trees. A downstream agent ran it from its own
+  // session and renamed ledgers in two unrelated repos that were mid-branch.
+  assert.throws(() => retireAllUpgradeRecords(config, root), /--project|--all/);
+
+  // Naming one is allowed, and so is asking for the fleet explicitly.
+  assert.equal(retireAllUpgradeRecords(config, root, { project: 'repo-a' }).length, 1);
+  assert.equal(retireAllUpgradeRecords(config, root, { all: true }).length, 2);
+
+  // Both is a contradiction, not a narrowing: letting --project win would retire one repo for a
+  // caller that asked for the fleet, and report success.
+  assert.throws(
+    () => retireAllUpgradeRecords(config, root, { project: 'repo-a', all: true }),
+    /not both/
+  );
 });
