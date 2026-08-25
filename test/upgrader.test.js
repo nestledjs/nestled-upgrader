@@ -2584,4 +2584,11 @@ test('retireAllUpgradeRecords refuses to touch every repo unless asked', () => {
   // Naming one is allowed, and so is asking for the fleet explicitly.
   assert.equal(retireAllUpgradeRecords(config, root, { project: 'repo-a' }).length, 1);
   assert.equal(retireAllUpgradeRecords(config, root, { all: true }).length, 2);
+
+  // Both is a contradiction, not a narrowing: letting --project win would retire one repo for a
+  // caller that asked for the fleet, and report success.
+  assert.throws(
+    () => retireAllUpgradeRecords(config, root, { project: 'repo-a', all: true }),
+    /not both/
+  );
 });
