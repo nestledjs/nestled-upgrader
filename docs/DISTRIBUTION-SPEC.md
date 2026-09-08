@@ -93,7 +93,7 @@ releases:
     notes:
       - id: "2026-07-06-auth-token-rotation"
         title: "Rotate auth tokens on refresh"
-        delivery: code-patch          # code-patch | package-release | hybrid
+        delivery: code-patch          # code-patch | package-release | hybrid | intent-only
         intent: "Refresh handler must rotate the token; treat affectedPaths as hints."
         affectedPaths: ["src/auth/refresh.ts"]
         patch: "patches/2026-07-06-auth-token-rotation.diff"
@@ -104,11 +104,21 @@ releases:
           name: "@nestled/data-browser"
           targetVersion: "1.4.0"
           versionRange: "^1.4.0"
+      - id: "2026-07-06-annotate-date-only-fields"
+        title: "Annotate calendar-day columns"
+        delivery: intent-only         # no patch: every schema.prisma differs, so there's nothing to diff
+        intent: "Calendar-day fields should be declared with @dateOnly instead of guessed by name."
+        review: "Walk your schema.prisma and annotate every calendar-day field with @dateOnly."
 ```
 
 Notes map 1:1 to today's `upgrades/*.yaml` records — the producer emits them into the manifest
 instead of (only) a local folder. `delivery`, `intent`, `affectedPaths`, and the package fields
 are unchanged from the current model, so the consumer's apply logic is reused verbatim.
+
+`review` is orthogonal to `delivery` — any note, including `hybrid`, may carry it when a release
+couples a mechanical change to a judgment call the template author can't make on the consumer's
+behalf. See `@nestledjs/upgrades`' README for the full consumer-side contract (why the baseline
+holds below such a note instead of advancing past it, and how a human/agent resolves it).
 
 `releases[].id` should be **sortable** so "newer than baseline" is a simple comparison. Date-based
 (`YYYY.MM.N`) is recommended over semver because these are cumulative template states, not an API.
