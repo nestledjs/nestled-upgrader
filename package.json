@@ -1,16 +1,43 @@
 {
-  "name": "nestled-upgrader",
-  "version": "0.1.0",
-  "description": "Control-plane CLI for propagating Nestled template upgrades.",
+  "name": "@nestledjs/upgrader",
+  "version": "0.2.0",
+  "description": "Control-plane CLI for propagating Nestled template upgrades to downstream projects.",
   "type": "module",
   "bin": {
     "nestled-upgrader": "./bin/nestled-upgrader.js"
   },
+  "files": [
+    "bin/",
+    "lib/",
+    "docs/",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "upgrader.config.example.yaml"
+  ],
   "scripts": {
     "test": "node --test"
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nestledjs/nestled-upgrader.git"
+  },
+  "homepage": "https://github.com/nestledjs/nestled-upgrader#readme",
+  "bugs": {
+    "url": "https://github.com/nestledjs/nestled-upgrader/issues"
+  },
+  "keywords": [
+    "nestled",
+    "nestledjs",
+    "template",
+    "upgrades",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT"
 }

@@ -11,6 +11,17 @@ The primary workflow is:
 3. Generate downstream upgrade records and patches from `nestled-template` commit ranges.
 4. Run `upgrade --all` to check every product project, apply clean patches, and produce agent handoff reports for adaptations.
 
+## Install
+
+```bash
+npm install -g @nestledjs/upgrader
+```
+
+Run `nestled-upgrader` from your own operations folder: it reads `upgrader.config.yaml`, keeps its
+state, and writes `upgrades/`, `patches/` and `reports/` in the current directory. Start from
+[`upgrader.config.example.yaml`](upgrader.config.example.yaml). To work on the CLI itself, clone this
+repository and run `node bin/nestled-upgrader.js` instead.
+
 ## Usage
 
 For the operational runbook, start with [docs/HOWTO.md](docs/HOWTO.md).
