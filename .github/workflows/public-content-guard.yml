@@ -5,6 +5,8 @@ name: public-content-guard
 # regular expression per line). Matches are never printed: Actions logs on a public repository are
 # public too.
 #
+# Reviews and review comments are checked by public-content-review-guard.
+#
 # Pull requests use pull_request_target so the secret is available for pull requests from forks as well.
 # That is safe here because this job never checks out or runs code from the pull request: it reads the
 # pull request's text, commit messages and patches through the API.
@@ -15,10 +17,6 @@ on:
   issues:
     types: [opened, edited]
   issue_comment:
-    types: [created, edited]
-  pull_request_review:
-    types: [submitted, edited]
-  pull_request_review_comment:
     types: [created, edited]
 
 permissions:
@@ -38,7 +36,7 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
-          BODY: ${{ github.event.comment.body || github.event.review.body || github.event.issue.body || github.event.pull_request.body }}
+          BODY: ${{ github.event.comment.body || github.event.issue.body || github.event.pull_request.body }}
         run: |
           set -euo pipefail
           if [ -z "${TERMS:-}" ]; then
