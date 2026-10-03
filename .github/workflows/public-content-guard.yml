@@ -5,6 +5,8 @@ name: public-content-guard
 # regular expression per line). Matches are never printed: Actions logs on a public repository are
 # public too.
 #
+# Reviews and review comments are checked by public-content-review-guard.
+#
 # Pull requests use pull_request_target so the secret is available for pull requests from forks as well.
 # That is safe here because this job never checks out or runs code from the pull request: it reads the
 # pull request's text, commit messages and patches through the API.

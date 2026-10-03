@@ -1,0 +1,19 @@
+name: public-content-review-listener
+
+# Fires on pull request reviews and review comments. It has no permissions or secrets and does nothing
+# else: public-content-review-guard runs after it in this repository's own context (so it also works
+# for pull requests from forks, whose review events never receive secrets) and does the checking.
+
+on:
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+
+permissions: {}
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Review activity recorded; public-content-review-guard checks it."

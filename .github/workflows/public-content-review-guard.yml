@@ -1,0 +1,71 @@
+name: public-content-review-guard
+
+# This repository is public. Checks every review and review comment on a pull request against the
+# organization's private term list (the NESTLED_PUBLIC_TERMS secret: one case-insensitive extended
+# regular expression per line), labelling the pull request and failing when one matches. Matches are
+# never printed: Actions logs on a public repository are public too.
+#
+# Triggered by public-content-review-listener through workflow_run, so it runs in this repository's
+# context with access to the secret even for pull requests from forks. It never checks out or runs
+# pull request code; it only reads text through the API.
+
+on:
+  workflow_run:
+    workflows: [public-content-review-listener]
+    types: [completed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the pull request's reviews and review comments
+        env:
+          TERMS: ${{ secrets.NESTLED_PUBLIC_TERMS }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TERMS:-}" ]; then
+            echo "::warning::The term list secret isn't available to this run; nothing was checked."
+            exit 0
+          fi
+          patterns=$(mktemp)
+          printf '%s\n' "$TERMS" | grep -vE '^[[:space:]]*(#|$)' | grep -v '^review:' > "$patterns" || true
+          if [ ! -s "$patterns" ]; then
+            echo "::warning::The term list has no blocking entries; nothing was checked."
+            exit 0
+          fi
+          # workflow_run doesn't name the pull request for forks, so find it from its head.
+          number=$(gh api "repos/$REPO/pulls?state=all&head=$HEAD_OWNER:$HEAD_BRANCH" --jq '[.[] | .number][0] // empty')
+          if [ -z "$number" ]; then
+            number=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '[.[] | .number][0] // empty')
+          fi
+          if [ -z "$number" ]; then
+            echo "::error::Couldn't find the pull request for this review activity. A maintainer needs to check it."
+            exit 1
+          fi
+          file=$(mktemp)
+          gh api "repos/$REPO/pulls/$number/reviews" --paginate --jq '.[].body // empty' >> "$file"
+          gh api "repos/$REPO/pulls/$number/comments" --paginate --jq '.[].body // empty' >> "$file"
+          # grep exits 0 on a match, 1 on none, 2 on an error (e.g. an invalid expression); an error fails.
+          status=0
+          grep -qiE -f "$patterns" "$file" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The term list could not be evaluated, so this couldn't be checked. A maintainer needs to fix the list."
+            exit 1
+          fi
+          if [ "$status" -eq 0 ]; then
+            gh label create needs-redaction --repo "$REPO" --color B60205 --description "Contains text that must not be public" >/dev/null 2>&1 || true
+            gh api -X POST "repos/$REPO/issues/$number/labels" -f 'labels[]=needs-redaction' >/dev/null || true
+            echo "::error::A review or review comment on pull request #$number contains text that must not appear in a public repository. Please edit it; a maintainer will follow up."
+            exit 1
+          fi
+          echo "No restricted terms found in reviews or review comments."
