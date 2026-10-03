@@ -669,6 +669,43 @@ projects: []
   assert.equal(loadUpgrades(root).length, 0);
 });
 
+test('sync-template skips update-feed-only changes', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(path.join(template, '.nestled-upgrades'), { recursive: true });
+  fs.writeFileSync(path.join(template, 'README.md'), 'template\n');
+  fs.writeFileSync(path.join(template, '.nestled-upgrades', 'manifest.yaml'), 'channels:\n  canary: 2026.10.1\n');
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects: []
+`);
+
+  const config = loadConfig(root);
+  syncTemplate(config, root);
+  // Promoting a release to stable commits only the feed manifest.
+  fs.writeFileSync(path.join(template, '.nestled-upgrades', 'manifest.yaml'), 'channels:\n  canary: 2026.10.1\n  stable: 2026.10.1\n');
+  git(template, ['add', '.nestled-upgrades/manifest.yaml']);
+  git(template, ['commit', '-m', 'feed: promote 2026.10.1 to stable']);
+
+  const result = syncTemplate(config, root);
+
+  assert.equal(result.created, false);
+  assert.match(result.reason, /update feed/);
+  assert.equal(loadUpgrades(root).length, 0);
+});
+
 test('sync-template copies upgrade notes from dev template contract', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
   const root = path.join(parent, 'nestled-upgrader');
