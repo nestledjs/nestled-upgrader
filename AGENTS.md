@@ -56,6 +56,9 @@ For each blocked item:
 6. Run the project verification commands listed in config and the upgrade record.
 7. Update the downstream project's `.nestled/upgrade-log.yaml` with `adapted`, `superseded`, `skipped`, `not-applicable`, or `blocked`. **Key the entry by the upgrade's exact `id`** — copy it from `upgrades/<upgrade-id>.yaml`, never invent one from the date, the branch name, or the package version. Entries are only ever found by exact id, so a key of your own making is invisible: the upgrade stays `pending` forever and is offered again on every future run. The forms 0.8.0 rollout was recorded under four different ids across eight repos this way. Run `node bin/nestled-upgrader.js status` afterwards — it lists log entries matching no upgrade id, and yours should not appear.
 8. Update the report with what happened and why.
+9. From the downstream project, run `npx @nestledjs/upgrades apply --project .`. Once every note in a feed release has a terminal outcome (`applied`, `adapted`, `skipped`, `superseded`, `not-applicable`), it moves the project's `baselineRelease` forward. Commit the ledger change. Never edit `baselineRelease` or `lastReviewedCommit` by hand.
+
+**`blocked` means the upgrade itself can't go in.** If the upgrade is in place but the project's verification fails on problems that predate it (a flaky test, an unrelated doctor finding, a missing local database), record `adapted` with a note, and track the failure separately. Recording `blocked` for a pre-existing failure holds the project's baseline back indefinitely and hides the real problem in a ledger note.
 
 Delivery rules:
 
