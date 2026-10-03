@@ -16,6 +16,10 @@ on:
     types: [opened, edited]
   issue_comment:
     types: [created, edited]
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created, edited]
 
 permissions:
   contents: read
@@ -34,7 +38,7 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
-          BODY: ${{ github.event.comment.body || github.event.issue.body || github.event.pull_request.body }}
+          BODY: ${{ github.event.comment.body || github.event.review.body || github.event.issue.body || github.event.pull_request.body }}
         run: |
           set -euo pipefail
           if [ -z "${TERMS:-}" ]; then
