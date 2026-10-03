@@ -150,6 +150,13 @@ For each blocked report:
 6. Run verification from the project config and upgrade record.
 7. Update the downstream project's `.nestled/upgrade-log.yaml`.
 8. Commit the result in the downstream repo.
+9. Run `npx @nestledjs/upgrades apply --project .` in the downstream repo. When every note in a feed
+   release is terminal, it advances `baselineRelease`; commit that ledger change too. Don't edit
+   `baselineRelease` or `lastReviewedCommit` by hand.
+
+Use `blocked` only when the upgrade itself can't go in. If it is in place but verification fails on
+something that predates it, record `adapted` with a note and track the failure separately; otherwise
+the project's baseline is held back indefinitely and the real problem stays buried in the ledger.
 
 Always key log entries by the exact `id` in `upgrades/<upgrade-id>.yaml`. The
 catalog may declare `legacyIds` to reconcile historical aliases from older
