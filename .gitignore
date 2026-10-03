@@ -1,0 +1,14 @@
+node_modules/
+
+# Instance-specific operational files — not for version control.
+# Copy upgrader.config.example.yaml to upgrader.config.yaml and customize.
+upgrader.config.yaml
+upgrader.state.yaml
+# No trailing slash: these may be local directories or symlinks to a private data store.
+upgrades
+patches
+reports
+.claude/**
+
+# Timestamped console logs written by the Playwright MCP server during a session.
+.playwright-mcp/

@@ -1,0 +1,39 @@
+name: Bug report
+description: A package or tool doesn't behave as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is public. Leave out anything that identifies your own project or deployment.
+        Template problems belong on [nestled-dev-template](https://github.com/nestledjs/nestled-dev-template/issues). **Security problem?** Use [private vulnerability reporting](https://github.com/nestledjs/nestled-upgrader/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Package name and version (or commit).
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+  - type: checkboxes
+    id: public
+    attributes:
+      label: This repository is public
+      options:
+        - label: I removed project, client, organization and site names, private URLs, credentials and private repository links.
+          required: true

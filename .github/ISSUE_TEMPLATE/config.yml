@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Template issues
+    url: https://github.com/nestledjs/nestled-dev-template/issues
+    about: Problems with the template itself are tracked on nestled-dev-template.
+  - name: Report a security vulnerability
+    url: https://github.com/nestledjs/nestled-upgrader/security/advisories/new
+    about: Report security problems privately, never as a public issue.

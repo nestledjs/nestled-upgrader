@@ -1,0 +1,26 @@
+name: Feature request
+description: Something this package or tool should do
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: This repository is public. Describe the need in general terms; leave out anything that identifies your own project or deployment.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+    validations:
+      required: true
+  - type: checkboxes
+    id: public
+    attributes:
+      label: This repository is public
+      options:
+        - label: I removed project, client, organization and site names, private URLs, credentials and private repository links.
+          required: true

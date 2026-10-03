@@ -1,0 +1,88 @@
+name: public-content-guard
+
+# This repository is public. Fails a pull request, and labels an issue, when its text adds a term from
+# the organization's private term list (the NESTLED_PUBLIC_TERMS secret: one case-insensitive extended
+# regular expression per line). Matches are never printed: Actions logs on a public repository are
+# public too.
+#
+# Pull requests use pull_request_target so the secret is available for pull requests from forks as well.
+# That is safe here because this job never checks out or runs code from the pull request: it reads the
+# pull request's text, commit messages and patches through the API.
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check text against the private term list
+        env:
+          TERMS: ${{ secrets.NESTLED_PUBLIC_TERMS }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
+          BODY: ${{ github.event.comment.body || github.event.issue.body || github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TERMS:-}" ]; then
+            echo "::warning::The term list secret isn't available to this run; nothing was checked."
+            exit 0
+          fi
+          patterns=$(mktemp)
+          printf '%s\n' "$TERMS" | grep -vE '^[[:space:]]*(#|$)' | grep -v '^review:' > "$patterns" || true
+          if [ ! -s "$patterns" ]; then
+            echo "::warning::The term list has no blocking entries; nothing was checked."
+            exit 0
+          fi
+          file=$(mktemp)
+          printf '%s\n%s\n' "${TITLE:-}" "${BODY:-}" > "$file"
+          if [ "$EVENT" = pull_request_target ]; then
+            # Fail closed: anything that can't be read completely fails the check rather than passing it.
+            unchecked() {
+              echo "::error::Part of this pull request couldn't be checked automatically ($1). A maintainer needs to review it."
+              exit 1
+            }
+            pr=$(gh api "repos/$REPO/pulls/$NUMBER")
+            commits=$(gh api "repos/$REPO/pulls/$NUMBER/commits" --paginate --jq '.[].sha' | wc -l)
+            [ "$commits" -eq "$(jq -r .commits <<<"$pr")" ] || unchecked "more commits than the API returns"
+            gh api "repos/$REPO/pulls/$NUMBER/commits" --paginate --jq '.[].commit.message' >> "$file"
+            files=$(mktemp)
+            gh api "repos/$REPO/pulls/$NUMBER/files" --paginate --jq '.[] | {filename, status, additions, patch}' > "$files"
+            [ "$(jq -s length "$files")" -eq "$(jq -r .changed_files <<<"$pr")" ] || unchecked "more files than the API returns"
+            # A file with added lines but no patch is a diff too large for the API to include.
+            [ "$(jq -s '[.[] | select(.additions > 0 and .patch == null)] | length' "$files")" -eq 0 ] || unchecked "a diff too large to read"
+            # Paths of added, changed and renamed files (a name alone can identify).
+            jq -r 'select(.status != "removed") | .filename' "$files" >> "$file"
+            # Added lines only. Per-file patches hold hunks, not file headers, so every line starting with
+            # "+" is an addition; exactly one "+" is removed so anchored expressions see the real text.
+            jq -r '.patch // empty | split("\n")[] | select(startswith("+")) | .[1:]' "$files" >> "$file"
+          fi
+          # Each entry is its own extended regular expression (grep -f keeps them separate). grep exits 0
+          # on a match, 1 on none, and 2 on an error such as an invalid expression; an error must fail the
+          # check, never pass it.
+          status=0
+          grep -qiE -f "$patterns" "$file" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::The term list could not be evaluated, so this couldn't be checked. A maintainer needs to fix the list."
+            exit 1
+          fi
+          if [ "$status" -eq 0 ]; then
+            gh label create needs-redaction --repo "$REPO" --color B60205 --description "Contains text that must not be public" >/dev/null 2>&1 || true
+            gh api -X POST "repos/$REPO/issues/$NUMBER/labels" -f 'labels[]=needs-redaction' >/dev/null || true
+            echo "::error::This contains text that must not appear in a public repository (for example a project, client or site name, or a private repository link). Please edit it; a maintainer will follow up."
+            exit 1
+          fi
+          echo "No restricted terms found."

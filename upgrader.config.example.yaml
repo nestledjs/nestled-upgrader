@@ -1,0 +1,77 @@
+# Copy this file to upgrader.config.yaml and customize for your setup.
+#
+# promotion.source: the dev/working template repo where upgrade notes are authored.
+# template: the canonical template repo that projects clone from.
+# projects: downstream projects to upgrade.
+
+promotion:
+  source:
+    name: my-dev-template
+    path: ../my-dev-template
+
+  # A few files are deliberately not mirrored because they carry the imported-vs-embedded seam:
+  # package.json (workspace: refs), tsconfig.base.json (path aliases for libraries the template
+  # consumes as packages), and sonar-project.properties (analysis surface). The promotion report
+  # lists what has drifted in them so nothing goes missing silently — it never writes them.
+  #
+  # Differences that are permanent and correct belong here, so the report keeps its signal.
+  driftIgnore:
+    scripts:
+      # Publishing scripts for the libraries the dev template embeds and the template imports.
+      - pub-build
+      - pub-version
+      - pub-release
+    paths:
+      - '@my-dev-template/data-browser'
+      - '@myorg/shared-components'
+    sonarSources:
+      - libs/data-browser/src
+      - libs/shared-components/src
+
+template:
+  name: my-template
+  path: ../my-template
+  mainBranch: develop
+
+# Optional: keep your installations out of public text. feed-publish and report-upstream already
+# treat every project's name and path as private; list anything else that identifies you here.
+# publicSafety:
+#   terms:
+#     - Example Client Ltd
+#     - example-client.com
+#   publicOwners: [nestledjs]   # GitHub owners whose repositories are public (default: nestledjs)
+#   issueRepo: nestledjs/nestled-dev-template
+
+# Optional: auto-discover sibling directories as projects.
+# Repos listed here are excluded from discovery.
+discover:
+  exclude:
+    - my-dev-template
+    - my-template
+
+projects:
+  # The canonical template itself — receives promoted changes first.
+  - name: my-template
+    path: ../my-template
+    defaultBranch: develop
+    role: template-promotion
+    autoPR: true
+    # Paths excluded from raw patch promotion (managed separately).
+    rawPatchExcludes:
+      - package.json
+      - pnpm-lock.yaml
+      - package-lock.json
+      - yarn.lock
+    forkedAreas: []
+    verification: []
+
+  # A downstream product project.
+  - name: my-app
+    path: ../my-app
+    defaultBranch: develop
+    # Mark areas your project has diverged from the template.
+    forkedAreas: []
+    # Commands run to verify the project after applying an upgrade.
+    verification:
+      - pnpm lint
+      - pnpm test
