@@ -310,6 +310,33 @@ projects:
   assert.ok(fs.existsSync(path.join(project, '.nestled', 'upgrade-log.yaml')));
 });
 
+test('initializing a downstream ledger keeps the update feed settings', () => {
+  const root = fixture();
+  const config = loadConfig(root);
+  const project = config.projects[0];
+  writeUpgradeLog(project, {
+    template: {
+      repo: 'nestled-template',
+      originCommit: 'aaaaaaa',
+      lastReviewedCommit: 'bbbbbbb',
+      channel: 'canary',
+      baselineRelease: '2026.09.1',
+      remote: 'https://example.com/nestled-template.git',
+      ref: 'develop'
+    },
+    upgrades: {}
+  }, root);
+
+  initializeUpgradeLog(project, config, root);
+
+  const template = readUpgradeLog(project, root).template;
+  assert.equal(template.channel, 'canary');
+  assert.equal(template.baselineRelease, '2026.09.1');
+  assert.equal(template.remote, 'https://example.com/nestled-template.git');
+  assert.equal(template.ref, 'develop');
+  assert.equal(template.lastReviewedCommit, 'bbbbbbb');
+});
+
 test('normalizes downstream upgrade logs without touching template promotion ledgers', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-upgrader-'));
   const template = path.join(root, 'nestled-template');
