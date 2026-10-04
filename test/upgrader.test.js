@@ -733,6 +733,58 @@ projects: []
   assert.equal(loadUpgrades(root).length, 0);
 });
 
+test('a note patch leaves out feed publications and per-clone metadata in its range', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(path.join(template, '.nestled-upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(template, '.nestled-updates', 'upgrade-notes'), { recursive: true });
+  fs.writeFileSync(path.join(template, 'README.md'), 'one\n');
+  fs.writeFileSync(path.join(template, '.nestled-upgrades', 'manifest.yaml'), 'channels:\n  canary: 2026.10.1\n');
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects: []
+`);
+  const config = loadConfig(root);
+  syncTemplate(config, root);
+
+  // The previous release is published to the feed, then the next fix lands, in one sync range.
+  fs.writeFileSync(path.join(template, '.nestled-upgrades', 'manifest.yaml'), 'channels:\n  canary: 2026.10.2\n');
+  fs.writeFileSync(path.join(template, '.nestled-upgrades', 'previous.diff'), 'old patch\n');
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'feed: publish 2026.10.2']);
+  fs.writeFileSync(path.join(template, 'README.md'), 'two\n');
+  fs.writeFileSync(path.join(template, '.nestled-updates', 'upgrade-notes', '2026-10-04-fix.yaml'), `
+id: 2026-10-04-fix
+title: A fix
+priority: normal
+area: api
+type: bugfix
+delivery: code-patch
+intent: Fix it.
+why: It was broken.
+`);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'fix']);
+
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  const patch = fs.readFileSync(path.join(root, 'patches', '2026-10-04-fix.diff'), 'utf8');
+  assert.match(patch, /README\.md/);
+  assert.doesNotMatch(patch, /\.nestled-upgrades\//);
+});
+
 test('sync-template copies upgrade notes from dev template contract', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
   const root = path.join(parent, 'nestled-upgrader');
