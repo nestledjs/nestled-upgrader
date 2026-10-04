@@ -762,6 +762,8 @@ projects: []
   // The previous release is published to the feed, then the next fix lands, in one sync range.
   fs.writeFileSync(path.join(template, '.nestled-upgrades', 'manifest.yaml'), 'channels:\n  canary: 2026.10.2\n');
   fs.writeFileSync(path.join(template, '.nestled-upgrades', 'previous.diff'), 'old patch\n');
+  fs.mkdirSync(path.join(template, '.nestled'), { recursive: true });
+  fs.writeFileSync(path.join(template, '.nestled', 'upgrade-log.yaml'), 'template:\n  baselineRelease: 2026.10.2\n');
   git(template, ['add', '.']);
   git(template, ['commit', '-m', 'feed: publish 2026.10.2']);
   fs.writeFileSync(path.join(template, 'README.md'), 'two\n');
@@ -783,6 +785,7 @@ why: It was broken.
   const patch = fs.readFileSync(path.join(root, 'patches', '2026-10-04-fix.diff'), 'utf8');
   assert.match(patch, /README\.md/);
   assert.doesNotMatch(patch, /\.nestled-upgrades\//);
+  assert.doesNotMatch(patch, /\.nestled\//);
 });
 
 test('sync-template copies upgrade notes from dev template contract', () => {
