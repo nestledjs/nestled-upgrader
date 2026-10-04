@@ -4,7 +4,7 @@
   "description": "Control-plane CLI for propagating Nestled template upgrades to downstream projects.",
   "type": "module",
   "bin": {
-    "nestled-upgrader": "./bin/nestled-upgrader.js"
+    "nestled-upgrader": "bin/nestled-upgrader.js"
   },
   "files": [
     "bin/",
