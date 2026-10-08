@@ -165,6 +165,25 @@ test('double-quoted scalars round-trip without compounding backslashes', () => {
   assert.equal(current, source, 'round-trip must be idempotent');
 });
 
+test('quotes numeric-looking identifiers while preserving actual numeric scalars', () => {
+  const values = {
+    schemaVersion: 1,
+    templateCommit: '1234567',
+    leadingZero: '0123456',
+    exponent: '123e456',
+    finiteExponent: '1e5',
+    hex: '0x12',
+    decimal: '3.25',
+  };
+  const emitted = stringifyYaml(values);
+  assert.match(emitted, /^schemaVersion: 1$/m);
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value !== 'string') continue;
+    assert.ok(emitted.includes(`${key}: ${JSON.stringify(value)}\n`), `${key} must be quoted`);
+    assert.equal(parseYaml(emitted)[key], value);
+  }
+});
+
 test('parses block scalars with chomping indicators', () => {
   // Regression: only bare `>` and `|` were matched, so the common `>-` / `|-` forms threw
   // "Unexpected YAML indentation" and crashed the tool on hand-written upgrade-log entries.
