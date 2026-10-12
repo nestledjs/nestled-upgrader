@@ -58,7 +58,13 @@ On the way in it rewrites the two per-clone seams: `@nestled-template/data-brows
 
 The mirror is **additive** — it never deletes. Files that exist only in `nestled-template` are preserved and listed under "Template-only files" in the report. Published package sources (`data-browser`, `shared-components`, and `access-control`) are excluded; their versions flow through dependency synchronization in root or app-level package manifests, not copied source.
 
+Dependency synchronization only moves the versions of packages the template already declares. A root dependency that is new in `nestled-dev-template` is listed in the report under "Source dependencies the template does not declare" and is not added, because some source dependencies exist only for the excluded package sources. Add the ones the mirrored files need to the template's `package.json` by hand and update the lockfile in the same promotion PR.
+
 Because promotion mirrors dev-template's committed state, any fix must originate in `nestled-dev-template` and flow down — do not patch `nestled-template` directly, or the next promotion will revert it.
+
+### Keeping template-only paths out of note patches
+
+A note's patch is the template diff across the sync range, so a commit to something only the template carries, such as its own automation config, rides into every downstream patch that shares the range. List such paths under `template.patchExcludes` in `upgrader.config.yaml`: they are left out of every note patch, and a range that touches only them creates no upgrade.
 
 ### Committing a promotion
 

@@ -246,3 +246,38 @@ test('still strips real comments outside block scalars', () => {
   assert.equal(parsed.name, 'value');
   assert.equal(parsed.other, 'x');
 });
+
+test('parses block scalars that are sequence items or a sequence item\'s first key', () => {
+  const parsed = parseYaml(`
+agentHints:
+  - >
+    Fix the errors in tests and configs;
+    do not exclude files.
+  - plain hint
+  - |-
+    line one
+    # not a comment
+steps:
+  - run: >
+      pnpm exec nx run-many
+      -t typecheck
+    name: typecheck
+`);
+  assert.deepEqual(parsed.agentHints, [
+    'Fix the errors in tests and configs; do not exclude files.',
+    'plain hint',
+    'line one\n# not a comment',
+  ]);
+  assert.deepEqual(parsed.steps, [{ run: 'pnpm exec nx run-many -t typecheck', name: 'typecheck' }]);
+});
+
+test('comments after a sequence item\'s block scalar are still stripped', () => {
+  const parsed = parseYaml(`
+steps:
+  - run: >
+      pnpm test
+    # a standalone comment
+    name: unit # trailing comment
+`);
+  assert.deepEqual(parsed.steps, [{ run: 'pnpm test', name: 'unit' }]);
+});
