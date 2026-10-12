@@ -32,6 +32,10 @@ template:
   name: my-template
   path: ../my-template
   mainBranch: develop
+  # Optional: template paths that never belong in a note patch, such as the template's own
+  # automation config. A sync range that touches only these paths creates no upgrade.
+  # patchExcludes:
+  #   - automation/
 
 # Optional: keep your installations out of public text. feed-publish and report-upstream already
 # treat every project's name and path as private; list anything else that identifies you here.

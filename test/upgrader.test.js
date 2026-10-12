@@ -788,6 +788,92 @@ why: It was broken.
   assert.doesNotMatch(patch, /\.nestled\//);
 });
 
+test('template.patchExcludes keeps configured template-only paths out of note patches', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(path.join(template, '.nestled-updates', 'upgrade-notes'), { recursive: true });
+  fs.mkdirSync(path.join(template, 'automation'), { recursive: true });
+  fs.writeFileSync(path.join(template, 'README.md'), 'one\n');
+  fs.writeFileSync(path.join(template, 'automation', 'agent.config'), '{}\n');
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+  patchExcludes:
+    - automation/
+projects: []
+`);
+  const config = loadConfig(root);
+  syncTemplate(config, root);
+
+  // A commit to the excluded path alone is not a template change for downstream projects.
+  fs.writeFileSync(path.join(template, 'automation', 'agent.config'), '{"memory": "2G"}\n');
+  git(template, ['commit', '-am', 'automation: raise memory']);
+  const automationOnly = syncTemplate(config, root);
+  assert.equal(automationOnly.created, false);
+  assert.match(automationOnly.reason, /patchExcludes/);
+
+  // In a range shared with a note's change, the note patch still leaves the excluded path out.
+  fs.writeFileSync(path.join(template, 'automation', 'agent.config'), '{"memory": "3G"}\n');
+  git(template, ['commit', '-am', 'automation: raise memory again']);
+  fs.writeFileSync(path.join(template, 'README.md'), 'two\n');
+  fs.writeFileSync(path.join(template, '.nestled-updates', 'upgrade-notes', '2026-10-04-fix.yaml'), `
+id: 2026-10-04-fix
+title: A fix
+priority: normal
+area: api
+type: bugfix
+delivery: code-patch
+intent: Fix it.
+why: It was broken.
+`);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'fix']);
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  const patch = fs.readFileSync(path.join(root, 'patches', '2026-10-04-fix.diff'), 'utf8');
+  assert.match(patch, /README\.md/);
+  assert.doesNotMatch(patch, /automation\//);
+});
+
+test('template.patchExcludes must be a list of paths', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(template, { recursive: true });
+  fs.writeFileSync(path.join(template, 'README.md'), 'one\n');
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+  patchExcludes: automation
+projects: []
+`);
+  const config = loadConfig(root);
+  syncTemplate(config, root);
+  fs.writeFileSync(path.join(template, 'README.md'), 'two\n');
+  git(template, ['commit', '-am', 'change']);
+  assert.throws(() => syncTemplate(config, root), /patchExcludes must be a list/);
+});
+
 test('sync-template copies upgrade notes from dev template contract', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
   const root = path.join(parent, 'nestled-upgrader');
@@ -1123,6 +1209,44 @@ projects:
   assert.equal(result.updates[0].from, '18.3.0');
   assert.equal(result.updates[0].to, '19.0.0');
   assert.equal(result.updates[0].type, 'external');
+});
+
+test('syncPackagesFromPromotion reports source dependencies the template does not declare', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-pkg-missing-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(devTemplate, { recursive: true });
+  fs.mkdirSync(template, { recursive: true });
+  fs.writeFileSync(path.join(devTemplate, 'package.json'), JSON.stringify({
+    dependencies: { react: '19.0.0', '@example/embedded': 'workspace:*' },
+    devDependencies: { '@types/pg': '8.16.0' }
+  }));
+  const templatePackage = JSON.stringify({ dependencies: { react: '19.0.0' } });
+  fs.writeFileSync(path.join(template, 'package.json'), templatePackage);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+`);
+  const config = loadConfig(root);
+  const result = syncPackagesFromPromotion(config, root);
+  assert.equal(result.status, 'up-to-date');
+  assert.deepEqual(result.missing, [{ field: 'devDependencies', name: '@types/pg', version: '8.16.0' }]);
+  // Reported only: the template manifest is not changed.
+  assert.equal(fs.readFileSync(path.join(template, 'package.json'), 'utf8'), templatePackage);
 });
 
 test('syncPackagesFromPromotion skips workspace refs', () => {
