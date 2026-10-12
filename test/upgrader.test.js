@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import {
   addDiscoveredProjects,
   applyUpgrade,
+  createDraftUpgrade,
   downstreamProjects,
   findUpgrade,
   initializeAllLogs,
@@ -40,6 +41,7 @@ import {
   writeExtractionRecommendations,
   writeUpgradeLog
 } from '../lib/upgrader.js';
+import { parseYaml } from '../lib/yaml.js';
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-upgrader-'));
@@ -846,6 +848,35 @@ why: It was broken.
   assert.doesNotMatch(patch, /automation\//);
 });
 
+test('create-upgrade normalizes patchExcludes before filtering affected paths', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(template, 'automation'), { recursive: true });
+  fs.writeFileSync(path.join(template, 'README.md'), 'one\n');
+  fs.writeFileSync(path.join(template, 'automation', 'agent.config'), '{}\n');
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  const from = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: template, encoding: 'utf8' }).stdout.trim();
+  fs.writeFileSync(path.join(template, 'README.md'), 'two\n');
+  fs.writeFileSync(path.join(template, 'automation', 'agent.config'), '{"memory": "2G"}\n');
+  git(template, ['commit', '-am', 'change']);
+  const to = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: template, encoding: 'utf8' }).stdout.trim();
+
+  const draft = createDraftUpgrade({ from, to, templatePath: '../nestled-template', patchExcludes: ['./automation/'] }, root);
+  const record = parseYaml(fs.readFileSync(draft.upgradePath, 'utf8'));
+  assert.deepEqual(record.affectedPaths, ['README.md']);
+  assert.doesNotMatch(fs.readFileSync(draft.patchPath, 'utf8'), /automation\//);
+  assert.throws(
+    () => createDraftUpgrade({ from: to, to: from, templatePath: '../nestled-template', patchExcludes: 'automation' }, root),
+    /patchExcludes must be a list/,
+  );
+});
+
 test('template.patchExcludes must be a list of paths', () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
   const root = path.join(parent, 'nestled-upgrader');
@@ -1247,6 +1278,50 @@ projects:
   assert.deepEqual(result.missing, [{ field: 'devDependencies', name: '@types/pg', version: '8.16.0' }]);
   // Reported only: the template manifest is not changed.
   assert.equal(fs.readFileSync(path.join(template, 'package.json'), 'utf8'), templatePackage);
+});
+
+test('syncPackagesFromPromotion reads the source at the promoted commit, not its working tree', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-pkg-sha-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const devTemplate = path.join(parent, 'nestled-dev-template');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(devTemplate, { recursive: true });
+  fs.mkdirSync(template, { recursive: true });
+  fs.writeFileSync(path.join(devTemplate, 'package.json'), JSON.stringify({ dependencies: { react: '19.0.0' } }));
+  git(devTemplate, ['init']);
+  git(devTemplate, ['config', 'user.email', 'test@example.com']);
+  git(devTemplate, ['config', 'user.name', 'Test User']);
+  git(devTemplate, ['config', 'commit.gpgsign', 'false']);
+  git(devTemplate, ['add', '.']);
+  git(devTemplate, ['commit', '-m', 'initial']);
+  const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: devTemplate, encoding: 'utf8' }).stdout.trim();
+  // Uncommitted work in the source checkout was never promoted.
+  fs.writeFileSync(path.join(devTemplate, 'package.json'), JSON.stringify({
+    dependencies: { react: '20.0.0' },
+    devDependencies: { '@types/pg': '8.16.0' }
+  }));
+  fs.writeFileSync(path.join(template, 'package.json'), JSON.stringify({ dependencies: { react: '18.0.0' } }));
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+promotion:
+  source:
+    name: nestled-dev-template
+    path: ../nestled-dev-template
+template:
+  name: nestled-template
+  path: ../nestled-template
+projects:
+  - name: nestled-template
+    path: ../nestled-template
+    defaultBranch: main
+    role: template-promotion
+    forkedAreas: []
+    verification: []
+`);
+  const config = loadConfig(root);
+  const result = syncPackagesFromPromotion(config, root, { dryRun: true, sourceSha: sha });
+  assert.deepEqual(result.updates.map((u) => [u.name, u.to]), [['react', '19.0.0']]);
+  assert.deepEqual(result.missing, []);
 });
 
 test('syncPackagesFromPromotion skips workspace refs', () => {

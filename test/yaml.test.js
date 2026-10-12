@@ -270,3 +270,14 @@ steps:
   ]);
   assert.deepEqual(parsed.steps, [{ run: 'pnpm exec nx run-many -t typecheck', name: 'typecheck' }]);
 });
+
+test('comments after a sequence item\'s block scalar are still stripped', () => {
+  const parsed = parseYaml(`
+steps:
+  - run: >
+      pnpm test
+    # a standalone comment
+    name: unit # trailing comment
+`);
+  assert.deepEqual(parsed.steps, [{ run: 'pnpm test', name: 'unit' }]);
+});
