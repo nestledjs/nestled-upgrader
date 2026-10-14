@@ -966,7 +966,7 @@ test('sync-template never creates a record for an archived upgrade note', () => 
   }, 'format archived note');
   const reformat = syncTemplate(config, root);
   assert.equal(reformat.created, false);
-  assert.match(reformat.reason, /archived upgrade notes/);
+  assert.match(reformat.reason, /archived or retired upgrade notes/);
   assert.deepEqual(fs.readdirSync(path.join(root, 'upgrades')), []);
   assert.deepEqual(fs.readdirSync(path.join(root, 'patches')), []);
 
@@ -979,6 +979,54 @@ test('sync-template never creates a record for an archived upgrade note', () => 
   const result = syncTemplate(config, root);
   assert.equal(result.created, true);
   assert.deepEqual(loadUpgrades(root).map((upgrade) => upgrade.id), ['2026-03-01-new']);
+});
+
+test('retiring a note creates nothing even when Git reports the move as a delete plus an add', () => {
+  const { root, template, config } = syncFixture({
+    [`${NOTES}/2026-02-01-active.yaml`]: noteYaml('2026-02-01-active', ['README.md']),
+  });
+  git(template, ['config', 'diff.renames', 'false']);
+  fs.mkdirSync(path.join(template, NOTES, 'archive'), { recursive: true });
+  git(template, ['mv', `${NOTES}/2026-02-01-active.yaml`, `${NOTES}/archive/2026-02-01-active.yaml`]);
+  git(template, ['commit', '-m', 'retire note']);
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, false);
+  assert.match(result.reason, /retired upgrade notes/);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'upgrades')), []);
+});
+
+test('a change only an already-recorded note claims is reported, not hidden', () => {
+  const { root, template, config } = syncFixture({ 'apps/api/main.ts': 'a\n', 'tools/script.sh': 'a\n' });
+  commitTemplate(template, {
+    'apps/api/main.ts': 'b\n',
+    [`${NOTES}/2026-08-01-api.yaml`]: noteYaml('2026-08-01-api', ['apps/api/**']),
+  }, 'api');
+  assert.equal(syncTemplate(config, root).created, true);
+
+  // The recorded API note is edited alongside its code and a new docs note arrives.
+  commitTemplate(template, {
+    'README.md': 'two\n',
+    'apps/api/main.ts': 'c\n',
+    [`${NOTES}/2026-08-01-api.yaml`]: noteYaml('2026-08-01-api', ['apps/api/**'], 'review: Follow-up.\n'),
+    [`${NOTES}/2026-08-02-docs.yaml`]: noteYaml('2026-08-02-docs', ['README.md']),
+  }, 'follow-up and docs');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  assert.deepEqual(result.changedNotes, ['2026-08-01-api']);
+  assert.deepEqual(result.unclaimedPaths, ['apps/api/main.ts']);
+  const docs = fs.readFileSync(path.join(root, 'patches', '2026-08-02-docs.diff'), 'utf8');
+  assert.doesNotMatch(docs, /apps\/api/);
+
+  // Two recorded notes edited next to an unrelated change: nothing is created, the change is named.
+  commitTemplate(template, {
+    'tools/script.sh': 'b\n',
+    [`${NOTES}/2026-08-01-api.yaml`]: noteYaml('2026-08-01-api', ['apps/api/**'], 'review: Again.\n'),
+    [`${NOTES}/2026-08-02-docs.yaml`]: noteYaml('2026-08-02-docs', ['README.md'], 'review: Again.\n'),
+  }, 'edit both notes');
+  const edited = syncTemplate(config, root);
+  assert.equal(edited.created, false);
+  assert.deepEqual(edited.changedNotes.sort(), ['2026-08-01-api', '2026-08-02-docs']);
+  assert.deepEqual(edited.unclaimedPaths, ['tools/script.sh']);
 });
 
 test('an edited note keeps its existing record and patch, and is reported', () => {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { main, parseArgs } from '../lib/cli.js';
+import { main, parseArgs, printSyncResult } from '../lib/cli.js';
 import { COMMANDS, UsageError } from '../lib/cli-args.js';
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'nestled-upgrader.js');
@@ -191,4 +191,17 @@ test('the binary exits 0 for --help and non-zero for an unknown flag', () => {
   assert.match(bad.stderr, /Unknown option for feed-promote: --bogus/);
   assert.match(bad.stderr, /Usage: nestled-upgrader feed-promote /);
   assert.doesNotMatch(bad.stderr, /upgrader\.config\.yaml/);
+});
+
+test('sync output names edited notes and unclaimed paths even when nothing was created', (t) => {
+  const log = t.mock.method(console, 'log', () => {});
+  printSyncResult({
+    created: false,
+    reason: 'No new upgrade notes in a..b; existing record(s) kept unchanged for edited note(s): n1, n2.',
+    changedNotes: ['n1', 'n2'],
+    unclaimedPaths: ['apps/api/main.ts']
+  });
+  const output = log.mock.calls.map((call) => call.arguments[0]).join('\n');
+  assert.match(output, /kept unchanged: n1, n2/);
+  assert.match(output, /claims \(in no patch\):\n  - apps\/api\/main\.ts/);
 });
