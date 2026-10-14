@@ -26,6 +26,10 @@ repository and run `node bin/nestled-upgrader.js` instead.
 
 For the operational runbook, start with [docs/HOWTO.md](docs/HOWTO.md).
 
+Every command accepts `--help` (or `-h`), which prints its options and defaults and does nothing else.
+An option a command doesn't recognize is an error: the command exits non-zero before reading
+configuration or touching any repository.
+
 ### Operational data boundary
 
 This repository contains the reusable CLI, not an operator's project inventory or run history.
