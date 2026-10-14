@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   addDiscoveredProjects,
+  affectedPathMatches,
   applyUpgrade,
   createDraftUpgrade,
   downstreamProjects,
@@ -903,6 +904,204 @@ projects: []
   fs.writeFileSync(path.join(template, 'README.md'), 'two\n');
   git(template, ['commit', '-am', 'change']);
   assert.throws(() => syncTemplate(config, root), /patchExcludes must be a list/);
+});
+
+// --- sync: archived notes, edited notes, and per-note patches ------------------------------
+
+function syncFixture(files = {}) {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-parent-'));
+  const root = path.join(parent, 'nestled-upgrader');
+  const template = path.join(parent, 'nestled-template');
+  fs.mkdirSync(path.join(root, 'upgrades'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'patches'), { recursive: true });
+  fs.mkdirSync(template, { recursive: true });
+  writeTemplateFiles(template, { 'README.md': 'one\n', ...files });
+  git(template, ['init']);
+  git(template, ['config', 'user.email', 'test@example.com']);
+  git(template, ['config', 'user.name', 'Test User']);
+  git(template, ['config', 'commit.gpgsign', 'false']);
+  git(template, ['add', '.']);
+  git(template, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(root, 'upgrader.config.yaml'), `
+template:
+  name: nestled-template
+  path: ../nestled-template
+  mainBranch: main
+projects: []
+`);
+  const config = loadConfig(root);
+  syncTemplate(config, root);
+  return { root, template, config };
+}
+
+function writeTemplateFiles(template, files) {
+  for (const [rel, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(template, rel)), { recursive: true });
+    fs.writeFileSync(path.join(template, rel), content);
+  }
+}
+
+function commitTemplate(template, files, message) {
+  writeTemplateFiles(template, files);
+  git(template, ['add', '-A']);
+  git(template, ['commit', '-m', message]);
+}
+
+function noteYaml(id, affectedPaths = [], extra = '') {
+  const paths = affectedPaths.length ? `affectedPaths:\n${affectedPaths.map((entry) => `  - "${entry}"`).join('\n')}\n` : '';
+  return `id: ${id}\ntitle: Note ${id}\npriority: normal\narea: api\ntype: bugfix\ndelivery: code-patch\nintent: Do ${id}.\nwhy: Because.\n${paths}${extra}`;
+}
+
+const NOTES = '.nestled-updates/upgrade-notes';
+
+test('sync-template never creates a record for an archived upgrade note', () => {
+  const { root, template, config } = syncFixture({
+    [`${NOTES}/archive/2026-01-01-retired.yaml`]: noteYaml('2026-01-01-retired', ['README.md']),
+    [`${NOTES}/2026-02-01-active.yaml`]: noteYaml('2026-02-01-active', ['README.md']),
+  });
+
+  // A formatting-only change to an archived note is not an upgrade, and creates nothing at all.
+  commitTemplate(template, {
+    [`${NOTES}/archive/2026-01-01-retired.yaml`]: `${noteYaml('2026-01-01-retired', ['README.md'])}\n`,
+  }, 'format archived note');
+  const reformat = syncTemplate(config, root);
+  assert.equal(reformat.created, false);
+  assert.match(reformat.reason, /archived upgrade notes/);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'upgrades')), []);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'patches')), []);
+
+  // Retiring a note in the same range as a new one records only the new one.
+  git(template, ['mv', `${NOTES}/2026-02-01-active.yaml`, `${NOTES}/archive/2026-02-01-active.yaml`]);
+  commitTemplate(template, {
+    'README.md': 'two\n',
+    [`${NOTES}/2026-03-01-new.yaml`]: noteYaml('2026-03-01-new', ['README.md']),
+  }, 'retire one note, add another');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  assert.deepEqual(loadUpgrades(root).map((upgrade) => upgrade.id), ['2026-03-01-new']);
+});
+
+test('an edited note keeps its existing record and patch, and is reported', () => {
+  const { root, template, config } = syncFixture();
+  commitTemplate(template, {
+    'README.md': 'two\n',
+    [`${NOTES}/2026-04-01-fix.yaml`]: noteYaml('2026-04-01-fix', ['README.md']),
+  }, 'fix');
+  assert.equal(syncTemplate(config, root).created, true);
+  const recordPath = path.join(root, 'upgrades', '2026-04-01-fix.yaml');
+  const patchPath = path.join(root, 'patches', '2026-04-01-fix.diff');
+  const record = fs.readFileSync(recordPath, 'utf8');
+  const patch = fs.readFileSync(patchPath, 'utf8');
+
+  commitTemplate(template, {
+    'README.md': 'three\n',
+    [`${NOTES}/2026-04-01-fix.yaml`]: noteYaml('2026-04-01-fix', ['README.md'], 'review: Reworded.\n'),
+  }, 'reword the note');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, false);
+  assert.deepEqual(result.changedNotes, ['2026-04-01-fix']);
+  assert.match(result.reason, /kept unchanged.*2026-04-01-fix/);
+  assert.equal(fs.readFileSync(recordPath, 'utf8'), record);
+  assert.equal(fs.readFileSync(patchPath, 'utf8'), patch);
+});
+
+test('a single note in a range keeps the whole range as its patch', () => {
+  const { root, template, config } = syncFixture({ 'apps/api/main.ts': 'a\n' });
+  commitTemplate(template, {
+    'README.md': 'two\n',
+    'apps/api/main.ts': 'b\n',
+    [`${NOTES}/2026-05-01-docs.yaml`]: noteYaml('2026-05-01-docs', ['README.md']),
+  }, 'docs');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  assert.deepEqual(result.unclaimedPaths, []);
+  const patch = fs.readFileSync(path.join(root, 'patches', '2026-05-01-docs.diff'), 'utf8');
+  assert.match(patch, /README\.md/);
+  assert.match(patch, /apps\/api\/main\.ts/);
+});
+
+test('notes sharing a range each get only the paths their affectedPaths declare', () => {
+  const { root, template, config } = syncFixture({
+    'AGENTS.md': 'one\n',
+    'apps/api/src/auth/session.ts': 'a\n',
+    'libs/forms/src/index.ts': 'a\n',
+    'libs/forms/src/deep/other.ts': 'a\n',
+    'apps/web/old-name.ts': 'unchanged content that is long enough to be detected as a rename\n',
+    'tools/script.sh': 'a\n',
+  });
+  git(template, ['mv', 'apps/web/old-name.ts', 'apps/web/new-name.ts']);
+  commitTemplate(template, {
+    'AGENTS.md': 'two\n',
+    'apps/api/src/auth/session.ts': 'b\n',
+    'libs/forms/src/index.ts': 'b\n',
+    'libs/forms/src/deep/other.ts': 'b\n',
+    'tools/script.sh': 'b\n',
+    [`${NOTES}/2026-06-01-big.yaml`]: noteYaml('2026-06-01-big', ['apps/api/**', 'libs/*/src/index.ts', 'apps/web/new-name.ts']),
+    [`${NOTES}/2026-06-01-small.yaml`]: noteYaml('2026-06-01-small', ['./AGENTS.md']),
+  }, 'release');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+
+  const big = fs.readFileSync(path.join(root, 'patches', '2026-06-01-big.diff'), 'utf8');
+  assert.match(big, /apps\/api\/src\/auth\/session\.ts/);
+  assert.match(big, /libs\/forms\/src\/index\.ts/);
+  // `*` stays within one segment, so the deeper file is not claimed by `libs/*/src/index.ts`.
+  assert.doesNotMatch(big, /libs\/forms\/src\/deep/);
+  // A rename travels whole when the note claims either side.
+  assert.match(big, /rename from apps\/web\/old-name\.ts/);
+  assert.match(big, /rename to apps\/web\/new-name\.ts/);
+  assert.doesNotMatch(big, /AGENTS\.md/);
+  assert.doesNotMatch(big, /upgrade-notes/);
+
+  const small = fs.readFileSync(path.join(root, 'patches', '2026-06-01-small.diff'), 'utf8');
+  assert.match(small, /AGENTS\.md/);
+  assert.doesNotMatch(small, /apps\//);
+  assert.doesNotMatch(small, /libs\//);
+
+  // Changes no note claims are named, not silently dropped. The notes themselves are bookkeeping.
+  assert.deepEqual(result.unclaimedPaths.sort(), ['libs/forms/src/deep/other.ts', 'tools/script.sh']);
+
+  // The patch applies cleanly to a copy of the template at the range start.
+  const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-clone-'));
+  git(clone, ['clone', '--quiet', template, '.']);
+  git(clone, ['checkout', '--quiet', result.from]);
+  git(clone, ['apply', '--check', path.join(root, 'patches', '2026-06-01-big.diff')]);
+  git(clone, ['apply', '--check', path.join(root, 'patches', '2026-06-01-small.diff')]);
+});
+
+test('a note whose share of a multi-note range is empty is recorded without a patch', () => {
+  const { root, template, config } = syncFixture({ 'AGENTS.md': 'one\n' });
+  commitTemplate(template, {
+    'AGENTS.md': 'two\n',
+    [`${NOTES}/2026-07-01-docs.yaml`]: noteYaml('2026-07-01-docs', ['AGENTS.md']),
+    [`${NOTES}/2026-07-01-stale.yaml`]: noteYaml('2026-07-01-stale', ['apps/api/**']),
+  }, 'two notes');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  const stale = result.drafts.find((draft) => draft.id === '2026-07-01-stale');
+  assert.equal(stale.patchOmitted, true);
+  assert.equal(fs.existsSync(path.join(root, 'patches', '2026-07-01-stale.diff')), false);
+  const record = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-07-01-stale');
+  assert.equal(record.patch, undefined);
+  assert.match(record.patchOmitted, /affectedPaths/);
+});
+
+test('affectedPathMatches follows plain-path and glob semantics', () => {
+  assert.equal(affectedPathMatches('apps/api', 'apps/api/src/x.ts'), true);
+  assert.equal(affectedPathMatches('apps/api/', 'apps/api'), true);
+  assert.equal(affectedPathMatches('./README.md', 'README.md'), true);
+  assert.equal(affectedPathMatches('apps/api', 'apps/apiary/x.ts'), false);
+  assert.equal(affectedPathMatches('apps/api/**', 'apps/api/src/deep/x.ts'), true);
+  assert.equal(affectedPathMatches('apps/api/**', 'apps/web/x.ts'), false);
+  assert.equal(affectedPathMatches('**/schema.prisma', 'schema.prisma'), true);
+  assert.equal(affectedPathMatches('**/schema.prisma', 'libs/db/prisma/schema.prisma'), true);
+  assert.equal(affectedPathMatches('libs/*/src/index.ts', 'libs/forms/src/index.ts'), true);
+  assert.equal(affectedPathMatches('libs/*/src/index.ts', 'libs/a/b/src/index.ts'), false);
+  assert.equal(affectedPathMatches('libs/*', 'libs/forms/src/index.ts'), true);
+  assert.equal(affectedPathMatches('apps/*.ts', 'apps/main.ts'), true);
+  assert.equal(affectedPathMatches('apps/*.ts', 'apps/mainxts'), false);
+  assert.equal(affectedPathMatches('file?.md', 'file1.md'), true);
+  assert.equal(affectedPathMatches('', 'README.md'), false);
 });
 
 test('sync-template copies upgrade notes from dev template contract', () => {
