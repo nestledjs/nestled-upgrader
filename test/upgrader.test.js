@@ -2152,6 +2152,36 @@ test('promotion dry-run reports a mode-only difference without changing the file
   assert.match(report, /- tools\/dev\/run\.sh: mode changed: 100644 → 100755/);
 });
 
+test('promotion treats only the owner execute bit as executable, like Git', { skip: !modesSupported }, () => {
+  const { root, template, config } = modeDriftFixture();
+  // group/other execute only: Git records this as 100644, so it is still drift from a 100755 source
+  fs.chmodSync(path.join(template, 'tools/dev/run.sh'), 0o645);
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.deepEqual(
+    result.changes.find((c) => c.path === 'tools/dev/run.sh').modeChange,
+    { from: '100644', to: '100755' }
+  );
+  assert.ok(fs.statSync(path.join(template, 'tools/dev/run.sh')).mode & 0o100);
+});
+
+test('promotion never changes permissions through a destination symlink', { skip: !modesSupported }, () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  commitSourceFile(devTemplate, write, 'tools/dev/run.sh', '#!/bin/sh\n', { executable: false });
+  // The template's copy is a symlink to a byte-identical executable file outside the checkout.
+  const outside = path.join(path.dirname(template), 'outside-run.sh');
+  fs.writeFileSync(outside, '#!/bin/sh\n');
+  fs.chmodSync(outside, 0o755);
+  fs.mkdirSync(path.join(template, 'tools/dev'), { recursive: true });
+  fs.symlinkSync(outside, path.join(template, 'tools/dev/run.sh'));
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(fs.statSync(outside).mode & 0o777, 0o755);
+  assert.ok(!result.changes.some((c) => c.path === 'tools/dev/run.sh'));
+});
+
 test('promotion neither compares nor applies modes on Windows', () => {
   const { root, template, config } = modeDriftFixture();
 
