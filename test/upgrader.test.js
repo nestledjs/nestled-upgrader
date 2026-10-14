@@ -2045,6 +2045,123 @@ test('the promotion report records the resolved ref and full sha', () => {
   assert.equal(result.sourceCommit, head.slice(0, 7));
 });
 
+// --- promotion preserves the executable bit ---------------------------------------------
+// Regression: the mirror compared and wrote bytes only. A script committed 100755 in the source
+// arrived in the template as 0644, and a template file whose bytes already matched but whose mode
+// did not was never reported, so the drift persisted until something ran the script and failed
+// with "Permission denied".
+
+const modesSupported = process.platform !== 'win32';
+const isExecutable = (abs) => (fs.statSync(abs).mode & 0o111) !== 0;
+
+// Commit `rel` in the source with the given Git mode and publish it to origin/develop. The mode is
+// set in the index, so the test does not depend on the fixture's filesystem permissions.
+function commitSourceFile(devTemplate, write, rel, content, { executable }) {
+  write(devTemplate, rel, content);
+  git(devTemplate, ['add', rel]);
+  git(devTemplate, ['update-index', `--chmod=${executable ? '+x' : '-x'}`, rel]);
+  git(devTemplate, ['commit', '-m', `add ${rel}`]);
+  publishDevTemplate(devTemplate);
+}
+
+test('promotion writes a new executable source file as executable', { skip: !modesSupported }, () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  commitSourceFile(devTemplate, write, 'tools/dev/run.sh', '#!/bin/sh\necho ok\n', { executable: true });
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.ok(isExecutable(path.join(template, 'tools/dev/run.sh')));
+  const change = result.changes.find((c) => c.path === 'tools/dev/run.sh');
+  assert.equal(change.kind, 'new');
+  assert.equal(change.mode, '100755');
+});
+
+test('promotion takes the executable bit from the committed tree, not the source working tree', { skip: !modesSupported }, () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  commitSourceFile(devTemplate, write, 'tools/dev/run.sh', '#!/bin/sh\n', { executable: true });
+  fs.chmodSync(path.join(devTemplate, 'tools/dev/run.sh'), 0o644);
+
+  mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.ok(isExecutable(path.join(template, 'tools/dev/run.sh')));
+});
+
+test('promotion keeps a non-executable source file non-executable', { skip: !modesSupported }, () => {
+  const { root, devTemplate, template, write, config } = promotionFixture();
+  commitSourceFile(devTemplate, write, 'apps/api/src/plain.ts', 'export {};\n', { executable: false });
+  // An existing target that is wrongly executable is drift in the other direction.
+  fs.chmodSync(path.join(template, 'apps/api/src/service.ts'), 0o755);
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false });
+
+  assert.equal(isExecutable(path.join(template, 'apps/api/src/plain.ts')), false);
+  assert.equal(isExecutable(path.join(template, 'apps/api/src/service.ts')), false);
+  assert.equal(result.changes.find((c) => c.path === 'apps/api/src/plain.ts').mode, '100644');
+  assert.deepEqual(
+    result.changes.find((c) => c.path === 'apps/api/src/service.ts').modeChange,
+    { from: '100755', to: '100644' }
+  );
+});
+
+// Template already carries the script with identical bytes but committed non-executable.
+function modeDriftFixture() {
+  const fixture = promotionFixture();
+  const { devTemplate, template, write } = fixture;
+  commitSourceFile(devTemplate, write, 'tools/dev/run.sh', '#!/bin/sh\necho ok\n', { executable: true });
+  write(template, 'tools/dev/run.sh', '#!/bin/sh\necho ok\n');
+  fs.chmodSync(path.join(template, 'tools/dev/run.sh'), 0o644);
+  git(template, ['add', 'tools/dev/run.sh']);
+  git(template, ['commit', '-m', 'add run.sh without the executable bit']);
+  return fixture;
+}
+
+test('promotion detects, fixes and reports a mode-only difference', { skip: !modesSupported }, () => {
+  const { root, template, config } = modeDriftFixture();
+
+  const result = promoteTemplate(config, root, {});
+
+  const scriptPath = path.join(template, 'tools/dev/run.sh');
+  assert.ok(isExecutable(scriptPath));
+  assert.equal(fs.readFileSync(scriptPath, 'utf8'), '#!/bin/sh\necho ok\n');
+  const change = result.mirror.changes.find((c) => c.path === 'tools/dev/run.sh');
+  assert.equal(change.kind, 'mode');
+  assert.deepEqual(change.modeChange, { from: '100644', to: '100755' });
+  // Git sees the fix as a mode change only, which is what the reviewer commits.
+  assert.match(gitOutput(template, ['diff', '--summary']), /mode change 100644 => 100755 tools\/dev\/run\.sh/);
+
+  const report = fs.readFileSync(path.join(root, 'reports', 'promotion-mirror.md'), 'utf8');
+  assert.match(report, /1 mode-only/);
+  assert.match(report, /- tools\/dev\/run\.sh: mode changed: 100644 → 100755 \(content unchanged\)/);
+
+  // Converged: a second run finds nothing left to change.
+  const again = mirrorTemplateFromSource(config, root, { dryRun: true });
+  assert.ok(!again.changes.some((c) => c.path === 'tools/dev/run.sh'));
+});
+
+test('promotion dry-run reports a mode-only difference without changing the file', { skip: !modesSupported }, () => {
+  const { root, template, config } = modeDriftFixture();
+
+  const result = promoteTemplate(config, root, { dryRun: true });
+
+  assert.equal(isExecutable(path.join(template, 'tools/dev/run.sh')), false);
+  assert.equal(gitOutput(template, ['status', '--porcelain']), '');
+  const change = result.mirror.changes.find((c) => c.path === 'tools/dev/run.sh');
+  assert.deepEqual(change.modeChange, { from: '100644', to: '100755' });
+  const report = fs.readFileSync(path.join(root, 'reports', 'promotion-mirror.md'), 'utf8');
+  assert.match(report, /dry-run/);
+  assert.match(report, /- tools\/dev\/run\.sh: mode changed: 100644 → 100755/);
+});
+
+test('promotion neither compares nor applies modes on Windows', () => {
+  const { root, template, config } = modeDriftFixture();
+
+  const result = mirrorTemplateFromSource(config, root, { dryRun: false, platform: 'win32' });
+
+  assert.ok(!result.changes.some((c) => c.path === 'tools/dev/run.sh'));
+  assert.ok(result.changes.every((c) => c.modeChange === undefined && c.mode === undefined));
+  if (modesSupported) assert.equal(isExecutable(path.join(template, 'tools/dev/run.sh')), false);
+});
+
 // The file mirror must recognize the app-level workspace→published seam so a
 // correct clone-template mirrors clean, while still surfacing genuine (non-seam) manifest drift.
 function seamFixture(templateWebDeps, devAcRef = 'workspace:*') {
