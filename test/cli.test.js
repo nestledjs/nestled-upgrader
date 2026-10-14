@@ -59,8 +59,15 @@ test('unexpected positional arguments are rejected; declared ones are kept', () 
   assert.throws(() => parseArgs(['convergence-status', 'project-a', 'project-b']), /Unexpected argument/);
 });
 
-test('an unknown command is rejected', () => {
+test('an unknown command is rejected, including names inherited from Object.prototype', async () => {
   assert.throws(() => parseArgs(['feed-publsh']), /Unknown command: feed-publsh/);
+  for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    assert.throws(() => parseArgs([name]), new RegExp(`Unknown command: ${name}`));
+    const { calls, deps } = recordingDeps();
+    await assert.rejects(main([name], deps), /Unknown command/);
+    await assert.rejects(main(['help', name], deps), /Unknown command/);
+    assert.deepEqual(calls, []);
+  }
 });
 
 test('--help and -h are accepted by every command, even alongside invalid input', () => {
@@ -135,6 +142,7 @@ for (const command of ['feed-publish', 'feed-promote']) {
     const output = log.mock.calls[0].arguments[0];
     assert.match(output, new RegExp(`^Usage: nestled-upgrader ${command} `));
     assert.match(output, /--push +Push the template commit/);
+  if (command === 'feed-publish') assert.match(output, /--title "\.\.\." +Release title \(default: "Release <release id>"\)/);
   });
 }
 
