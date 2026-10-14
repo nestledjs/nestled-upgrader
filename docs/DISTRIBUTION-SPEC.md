@@ -178,8 +178,8 @@ came from*. `nestled-update init` reads it and sets `baselineRelease` with no gu
 
 | Command | What it does |
 |---|---|
-| existing `promote-template`, `sync-template`, `create-upgrade` | Author notes (unchanged). |
-| `feed-publish --channel canary [--title …] [--push] [--dry-run]` | Bundle unpublished downstream records into a new date-based release, copy their patches into the template's `.nestled-upgrades/`, advance the `canary` pointer, commit (and optionally push) the template. |
+| existing `promote-template`, `sync-template`, `create-upgrade` | Author notes. `sync-template` skips archived notes (`upgrade-notes/archive/`), never rewrites an existing record, and narrows each note's patch to its `affectedPaths` when a range carries several notes (see HOWTO, "What sync records"). |
+| `feed-publish --channel canary [--title …] [--push] [--dry-run]` | Bundle unpublished downstream records into a new date-based release, copy their patches into the template's `.nestled-upgrades/`, advance the `canary` pointer, commit (and optionally push) the template. A `code-patch`/`hybrid` record with no patch is held back and listed rather than published, since consumers block on a patch-delivery note with no `patch`; naming one with `--note` fails. |
 | `feed-promote --to stable [--release <id>] [--push]` | Advance the `stable` (or named) pointer to a release; commit the template. Defaults to the current `canary` release. |
 | `feed-status` | Print the feed's channel pointers and releases. |
 | `baseline-fleet --at <release> [--channel canary] [--remote <url>] [--ref <branch>] [--dry-run]` | One-time migration (see §6): stamp every fleet site's `.nestled/upgrade-log.yaml` with baseline, channel, and feed remote/ref. |

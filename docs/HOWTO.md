@@ -99,6 +99,16 @@ Downstream sync reads from `template.path` in `upgrader.config.yaml`, currently 
 
 Product projects do not receive promotion-only records from `nestled-dev-template`.
 
+### What sync records, and what it leaves alone
+
+`sync-template` creates one record per upgrade note added or changed in the range since the last sync, under `.nestled-updates/upgrade-notes/`. Three rules keep that from offering stale or oversized work:
+
+- **Archived notes never produce a record.** Retired notes live under `.nestled-updates/upgrade-notes/archive/`. Moving a note there, or reformatting one already there, is history, not an upgrade. When a range adds or changes no active note, changes under `upgrade-notes/` count as bookkeeping, including a retired note's old path when Git reports the move as a delete plus an add. A range that touches nothing else creates no upgrade and just advances the baseline.
+- **An edited note keeps its existing record.** If `upgrades/<id>.yaml` already exists, sync never re-creates or overwrites it or its patch, because the record may already be published or applied. Sync names the edited note instead ("existing record(s) kept unchanged"). If the edit matters downstream, ship it as a new note with a new id.
+- **One sync, several notes.** A note that is alone in its range gets the whole range diff as its patch, as before; its `affectedPaths` stay hints. When two or more notes arrive in one range, each note's patch only covers the changed paths its `affectedPaths` declares, so a small note doesn't carry the whole release. Matching is glob-aware. A plain entry (`apps/api`, `AGENTS.md`) matches that path and anything under it, the way `template.patchExcludes` entries do. `*` and `?` stay within one path segment, `**` matches any depth, and a glob that matches a directory claims everything in it. A rename goes to a note that claims either its old or its new path. Only notes being recorded in this sync claim paths, because a note that already has a record keeps its old patch. Changed paths no note claims go into no patch, and sync lists them under "Changed paths no note's affectedPaths claims". Either add them to the right note's patch by hand (`git -C <template> diff <range> -- <path>... >> patches/<id>.diff`), or confirm the change doesn't need to reach projects.
+
+If a note's share of a multi-note range is empty, its record has no `patch` and a `patchOmitted` field explaining why. No patch file is written, because `git apply` rejects an empty diff. A code-patch or hybrid record like this won't apply downstream, and `feed-publish` holds it back by name. Give it a patch by hand (write `patches/<id>.diff` from the record's `sourceCommitRange` and set `patch.path`), or change its `delivery` to `intent-only` with a `review`.
+
 ## Reading Results
 
 Start with:
