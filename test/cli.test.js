@@ -53,6 +53,16 @@ test('a value flag with no value does not swallow the next flag', () => {
   assert.throws(() => parseArgs(['feed-promote', '--to']), /Option --to requires a value/);
 });
 
+test('a value flag given twice is rejected rather than keeping only the last value', () => {
+  assert.throws(
+    () => parseArgs(['feed-publish', '--note', 'note-a', '--note', 'note-b']),
+    /Option --note was given more than once; pass one comma-separated list: --note <id>\[,<id>\]/,
+  );
+  assert.throws(() => parseArgs(['feed-publish', '--note=note-a', '--note', 'note-b']), /--note was given more than once/);
+  assert.throws(() => parseArgs(['feed-promote', '--to', 'stable', '--to', 'canary']), /Option --to was given more than once\n/);
+  assert.deepEqual(parseArgs(['feed-publish', '--note', 'note-a,note-b']).note, 'note-a,note-b');
+});
+
 test('unexpected positional arguments are rejected; declared ones are kept', () => {
   assert.throws(() => parseArgs(['feed-publish', 'canary']), /Unexpected argument for feed-publish: canary/);
   assert.deepEqual(parseArgs(['convergence-status', 'project-a'])._, ['convergence-status', 'project-a']);
