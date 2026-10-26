@@ -58,3 +58,20 @@ test('feed-publish holds back a patch-delivery record that has no patch', t => {
   assert.equal(named.dryRun, undefined);
   assert.match(named.reason, /without a patch: 2026-07-01-stale/);
 });
+
+test('feed-publish refuses a patch that failed to generate, even in a dry run', t => {
+  const { root, config } = feedFixture(t, {
+    '2026-07-01-lockfile': 'delivery: code-patch\npatch:\n  path: patches/2026-07-01-lockfile.diff\n',
+  });
+  fs.writeFileSync(
+    path.join(root, 'patches', '2026-07-01-lockfile.diff'),
+    '# Unable to generate patch automatically: spawnSync git ENOBUFS\n',
+  );
+
+  for (const dryRun of [true, false]) {
+    const result = publishFeed(config, { dryRun }, root);
+    assert.equal(result.published, false);
+    assert.match(result.reason, /Patch for 2026-07-01-lockfile failed to generate/);
+  }
+  assert.equal(fs.existsSync(path.join(root, 'template', '.nestled-upgrades', 'patches')), false);
+});
