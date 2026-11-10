@@ -53,6 +53,7 @@ Promotion is an **import-aware file mirror**, not a patch apply, so it never blo
 - imported-vs-embedded wiring: `package.json`, lockfiles, `nx.json`, `tsconfig.base.json`, `libs/data-browser/**`, `libs/shared-components/**`, `libs/access-control/**`
 - template-owned docs/identity: `README.md`, `CLAUDE.md`, `WARP.md`, `AGENTS.md`, `sonar-project.properties`, `docs/template/**`, `docs/dev/**`
 - dev-authoring tooling the cloneable template never carries: `.cursor/**`, `.agents/**`, `.opencode/**`, `ai-docs/**`, `plans/**`, `tools/ai-migrations/**`, …
+- upgrade-note authoring, which belongs to the source template alone: `.github/pull_request_template.md` (its "Downstream Upgrade" section asks every PR author for a note) and `scripts/create-upgrade-note.ts`. `nestled-template` keeps its own app-facing PR template, because every project cloned from it inherits that file. `scripts/validate-upgrade-notes.ts` is still mirrored, since CI runs it on inbound notes.
 
 On the way in it rewrites the two per-clone seams: `@nestled-template/data-browser` → the `@nestledjs/data-browser` package, and the Compose project `name:` → `nestled-template`. Extend the exclude/substitution sets under `promotion.mirror` in `upgrader.config.yaml`.
 

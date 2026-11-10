@@ -2073,11 +2073,15 @@ test('mirrorTemplateFromSource copies product files, applies seam substitutions,
   write(devTemplate, 'libs/access-control/src/index.ts', 'export const access = 1\n');
   write(devTemplate, '.cursor/skills/foo.md', 'authoring\n');
   write(devTemplate, '.nestled-updates/upgrade-notes/n.yaml', 'id: n\n');
+  write(devTemplate, '.github/pull_request_template.md', '## Downstream Upgrade\n');
+  write(devTemplate, 'scripts/create-upgrade-note.ts', 'export {}\n');
+  write(devTemplate, 'scripts/validate-upgrade-notes.ts', 'export {}\n');
 
   // template: a stale copy of a product file, plus files unique to the template that must survive
   write(template, 'apps/api/src/service.ts', 'export const svc = 0\n');
   write(template, 'apps/web/routes/only-here.tsx', 'export default 1\n');
   write(template, '.nestled/upgrade-log.yaml', 'upgrades: {}\n');
+  write(template, '.github/pull_request_template.md', '## Summary\n');
 
   for (const repo of [devTemplate, template]) {
     git(repo, ['init']);
@@ -2121,6 +2125,11 @@ projects:
   assert.ok(!fs.existsSync(path.join(template, 'libs/data-browser/src/index.ts')));
   assert.ok(!fs.existsSync(path.join(template, 'libs/access-control/src/index.ts')));
   assert.ok(!fs.existsSync(path.join(template, '.cursor/skills/foo.md')));
+  // note authoring stays upstream: the template keeps its own PR template, never gets the create
+  // script, and still receives the validator its CI runs on inbound notes
+  assert.equal(read('.github/pull_request_template.md'), '## Summary\n');
+  assert.ok(!fs.existsSync(path.join(template, 'scripts/create-upgrade-note.ts')));
+  assert.equal(read('scripts/validate-upgrade-notes.ts'), 'export {}\n');
   // template-only files preserved (never deleted); product one is reported, excluded log is not
   assert.equal(read('apps/web/routes/only-here.tsx'), 'export default 1\n');
   assert.equal(read('.nestled/upgrade-log.yaml'), 'upgrades: {}\n');
