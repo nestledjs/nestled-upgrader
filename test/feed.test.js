@@ -75,3 +75,79 @@ test('feed-publish refuses a patch that failed to generate, even in a dry run', 
   }
   assert.equal(fs.existsSync(path.join(root, 'template', '.nestled-upgrades', 'patches')), false);
 });
+
+function patched(root, id) {
+  fs.writeFileSync(path.join(root, 'patches', `${id}.diff`), `diff --git a/${id} b/${id}\n`);
+  return `delivery: code-patch\npatch:\n  path: patches/${id}.diff\n`;
+}
+
+test('feed-publish orders notes by applyAfter, then id', t => {
+  const { root, config } = feedFixture(t, {});
+  const write = (id, extra = '') =>
+    fs.writeFileSync(path.join(root, 'upgrades', `${id}.yaml`), `id: ${id}\ntitle: ${id}\nintent: Do it.\n${patched(root, id)}${extra}`);
+  // The follow-up sorts first by id but patches a file the spec note introduces.
+  write('2026-07-01-a-follow-up', 'applyAfter:\n  - 2026-07-01-b-adds-spec\n');
+  write('2026-07-01-b-adds-spec');
+  write('2026-07-01-c-other');
+  write('2026-07-02-d-single', 'applyAfter: 2026-07-01-c-other\n');
+
+  const result = publishFeed(config, { dryRun: true }, root);
+  assert.deepEqual(result.notes, ['2026-07-01-b-adds-spec', '2026-07-01-a-follow-up', '2026-07-01-c-other', '2026-07-02-d-single']);
+
+  publishFeed(config, {}, root);
+  const notes = readFeedManifest(config, root).releases[0].notes;
+  assert.deepEqual(notes.map((note) => note.id), result.notes);
+  assert.deepEqual(notes[1].applyAfter, ['2026-07-01-b-adds-spec']);
+  assert.deepEqual(notes[3].applyAfter, ['2026-07-01-c-other']);
+});
+
+test('feed-publish refuses an applyAfter cycle or a prerequisite left out of the release', t => {
+  const { root, config } = feedFixture(t, {});
+  const write = (id, after) =>
+    fs.writeFileSync(
+      path.join(root, 'upgrades', `${id}.yaml`),
+      `id: ${id}\ntitle: ${id}\nintent: Do it.\n${patched(root, id)}${after ? `applyAfter: ${after}\n` : ''}`,
+    );
+  write('2026-07-01-a', '2026-07-01-b');
+  write('2026-07-01-b', '2026-07-01-a');
+  write('2026-07-01-c');
+  write('2026-07-01-d', '2026-07-01-c');
+  write('2026-07-01-e', '2026-06-01-nonexistent');
+
+  const cycle = publishFeed(config, { dryRun: true, notes: ['2026-07-01-a', '2026-07-01-b'] }, root);
+  assert.equal(cycle.published, false);
+  assert.deepEqual(cycle.cycle, ['2026-07-01-a', '2026-07-01-b']);
+  assert.match(cycle.reason, /cycle among 2026-07-01-a, 2026-07-01-b/);
+
+  const leftOut = publishFeed(config, { dryRun: true, notes: ['2026-07-01-d'] }, root);
+  assert.equal(leftOut.published, false);
+  assert.match(leftOut.reason, /2026-07-01-d applies after 2026-07-01-c, which is not published and not in this release/);
+
+  const unknown = publishFeed(config, { dryRun: true, notes: ['2026-07-01-e'] }, root);
+  assert.match(unknown.reason, /2026-07-01-e applies after 2026-06-01-nonexistent, which is not a known note/);
+
+  // A prerequisite already published is satisfied.
+  const ok = publishFeed(config, { notes: ['2026-07-01-c'] }, root);
+  assert.equal(ok.published, true);
+  assert.deepEqual(publishFeed(config, { dryRun: true, notes: ['2026-07-01-d'] }, root).notes, ['2026-07-01-d']);
+});
+
+test('feed-publish carries agentHints and skipIf into the manifest entry', t => {
+  const { root, config } = feedFixture(t, {});
+  const id = '2026-07-01-hints';
+  fs.writeFileSync(
+    path.join(root, 'upgrades', `${id}.yaml`),
+    `id: ${id}\ntitle: ${id}\nintent: Do it.\n${patched(root, id)}` +
+      'skipIf:\n  - Project has its own client-side conversion.\n' +
+      'agentHints:\n  - Also skip list-valued fields.\n  - Register each sharded coverage report.\n',
+  );
+  fs.writeFileSync(path.join(root, 'upgrades', '2026-07-01-empty.yaml'), `id: 2026-07-01-empty\ntitle: t\nintent: i\n${patched(root, '2026-07-01-empty')}skipIf: []\n`);
+  assert.equal(publishFeed(config, {}, root).published, true);
+  const notes = readFeedManifest(config, root).releases[0].notes;
+  const hinted = notes.find((note) => note.id === id);
+  assert.deepEqual(hinted.skipIf, ['Project has its own client-side conversion.']);
+  assert.deepEqual(hinted.agentHints, ['Also skip list-valued fields.', 'Register each sharded coverage report.']);
+  const empty = notes.find((note) => note.id === '2026-07-01-empty');
+  assert.equal('skipIf' in empty, false);
+  assert.equal('agentHints' in empty, false);
+});
