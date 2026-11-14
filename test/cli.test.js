@@ -215,3 +215,47 @@ test('sync output names edited notes and unclaimed paths even when nothing was c
   assert.match(output, /kept unchanged: n1, n2/);
   assert.match(output, /claims \(in no patch\):\n  - apps\/api\/main\.ts/);
 });
+
+test('status reads a worktree ledger with --checkout or --ledger', async (t) => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-status-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const main_ = path.join(parent, 'project-a');
+  const worktree = path.join(parent, 'worktrees', 'project-a-upgrade');
+  const ledger = (status) => `template: {}\nupgrades:\n  2026-09-01-a:\n    status: ${status}\n`;
+  for (const [dir, status] of [[main_, 'pending'], [worktree, 'adapted']]) {
+    fs.mkdirSync(path.join(dir, '.nestled'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.nestled', 'upgrade-log.yaml'), ledger(status));
+  }
+  const deps = {
+    loadConfig: () => ({ projects: [{ name: 'project-a', path: main_ }], template: { path: 'template' } }),
+    loadUpgrades: () => [{ id: '2026-09-01-a' }]
+  };
+  const run = async (argv) => {
+    const log = t.mock.method(console, 'log', () => {});
+    try {
+      await main(argv, deps);
+      return log.mock.calls.map((call) => call.arguments[0]).join('\n');
+    } finally {
+      log.mock.restore();
+    }
+  };
+
+  assert.match(await run(['status', '--project', 'project-a']), /^project-a: pending: 1$/m);
+  const checkout = await run(['status', '--project', 'project-a', '--checkout', worktree]);
+  assert.match(checkout, /^project-a: adapted: 1$/m);
+  assert.match(checkout, new RegExp(`ledger: ${worktree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  const file = path.join(worktree, '.nestled', 'upgrade-log.yaml');
+  assert.match(await run(['status', '--project', 'project-a', '--ledger', file]), /^project-a: adapted: 1$/m);
+
+  await assert.rejects(main(['status', '--checkout', worktree], deps), /name it with --project/);
+  await assert.rejects(main(['status', '--project', 'project-a', '--checkout', worktree, '--ledger', file], deps), /not both/);
+  await assert.rejects(main(['status', '--project', 'project-a', '--checkout', parent], deps), /Upgrade log not found/);
+  assert.match(commandHelpText('status'), /--checkout <path>/);
+});
+
+function commandHelpText(command) {
+  const result = spawnSync(process.execPath, [BIN, command, '--help'], { encoding: 'utf8' });
+  return result.stdout;
+}

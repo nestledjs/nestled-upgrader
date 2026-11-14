@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { publishFeed } from '../lib/feed.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -3315,4 +3316,120 @@ test('retireAllUpgradeRecords refuses to touch every repo unless asked', () => {
     () => retireAllUpgradeRecords(config, root, { project: 'repo-a', all: true }),
     /not both/
   );
+});
+
+// A downstream that matches the template at `from` byte for byte, with its own history (so none of
+// the template's blobs), the way a product repo looks to a feed consumer.
+function downstreamAt(template, from) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nestled-downstream-'));
+  const files = gitOutput(template, ['ls-tree', '-r', '--name-only', from]).split('\n').filter(Boolean);
+  for (const file of files) {
+    const content = spawnSync('git', ['show', `${from}:${file}`], { cwd: template }).stdout;
+    fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+    fs.writeFileSync(path.join(repo, file), content);
+  }
+  git(repo, ['init', '--quiet']);
+  return repo;
+}
+
+test('notes sharing a range never ship the same path twice, so their patches apply in sequence', () => {
+  const { root, template, config } = syncFixture({
+    'apps/web/route.tsx': 'export const route = 1;\n',
+    'apps/web/other.tsx': 'export const other = 1;\n',
+    'docs/guide.md': 'guide\n',
+  });
+  // Both notes declare the route. The follow-up also patches a spec the first note introduces.
+  commitTemplate(template, {
+    'apps/web/route.tsx': 'export const route = 2;\n',
+    'apps/web/route.spec.tsx': 'it("routes", () => {});\n',
+    'apps/web/other.tsx': 'export const other = 2;\n',
+    'docs/guide.md': 'guide, revised\n',
+    [`${NOTES}/2026-09-01-pilot.yaml`]: noteYaml('2026-09-01-pilot', ['apps/web/route.tsx', 'apps/web/route.spec.tsx']),
+    [`${NOTES}/2026-09-01-wave.yaml`]: noteYaml('2026-09-01-wave', ['apps/web/**', 'docs/guide.md'], 'applyAfter: 2026-09-01-pilot\n'),
+  }, 'pilot and wave');
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  const pilot = path.join(root, 'patches', '2026-09-01-pilot.diff');
+  const wave = path.join(root, 'patches', '2026-09-01-wave.diff');
+  assert.match(fs.readFileSync(pilot, 'utf8'), /route\.tsx/);
+  const waveText = fs.readFileSync(wave, 'utf8');
+  assert.doesNotMatch(waveText, /route\.tsx|route\.spec\.tsx/, 'the shared path ships once, in the first patch');
+  assert.match(waveText, /apps\/web\/other\.tsx/);
+  assert.match(waveText, /docs\/guide\.md/);
+
+  // Each file in the downstream is identical to the template at the range start. Before this fix, the
+  // second patch carried route.tsx again; once the first had applied, `git apply` refused the whole
+  // second patch, other.tsx and guide.md included.
+  const downstream = downstreamAt(template, result.from);
+  git(downstream, ['apply', '--check', pilot]);
+  git(downstream, ['apply', pilot]);
+  git(downstream, ['apply', '--check', wave]);
+  git(downstream, ['apply', wave]);
+  for (const file of ['apps/web/route.tsx', 'apps/web/route.spec.tsx', 'apps/web/other.tsx', 'docs/guide.md']) {
+    assert.equal(fs.readFileSync(path.join(downstream, file), 'utf8'), gitOutput(template, ['show', `HEAD:${file}`]) + '\n');
+  }
+});
+
+test('a note whose every claimed path ships in an earlier note is recorded without a patch, saying where', () => {
+  const { root, template, config } = syncFixture({ 'AGENTS.md': 'one\n' });
+  commitTemplate(template, {
+    'AGENTS.md': 'two\n',
+    [`${NOTES}/2026-09-02-a.yaml`]: noteYaml('2026-09-02-a', ['AGENTS.md']),
+    [`${NOTES}/2026-09-02-b.yaml`]: noteYaml('2026-09-02-b', ['AGENTS.md']),
+  }, 'two notes, one file');
+  syncTemplate(config, root);
+  const record = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-09-02-b');
+  assert.equal(record.patch, undefined);
+  assert.match(record.patchOmitted, /ships in the patch of 2026-09-02-a/);
+  assert.deepEqual(record.applyAfter, ['2026-09-02-a']);
+});
+
+test('a note that gives up a shared path records the owner as a prerequisite', () => {
+  const { root, template, config } = syncFixture({ 'AGENTS.md': 'one\n', 'docs/guide.md': 'one\n' });
+  commitTemplate(template, {
+    'AGENTS.md': 'two\n',
+    'docs/guide.md': 'two\n',
+    [`${NOTES}/2026-09-04-a.yaml`]: noteYaml('2026-09-04-a', ['AGENTS.md']),
+    [`${NOTES}/2026-09-04-b.yaml`]: noteYaml('2026-09-04-b', ['AGENTS.md', 'docs/guide.md']),
+  }, 'shared file');
+  syncTemplate(config, root);
+  const record = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-09-04-b');
+  assert.deepEqual(record.applyAfter, ['2026-09-04-a']);
+  const result = publishFeed({ template: { path: '../nestled-template' } }, { dryRun: true, notes: ['2026-09-04-b'] }, root);
+  assert.equal(result.published, false);
+  assert.match(result.reason, /2026-09-04-b applies after 2026-09-04-a, which is not published/);
+});
+
+test('a note whose patch is never published does not take a shared path from a code-patch note', () => {
+  const { root, template, config } = syncFixture({ 'package.json': '{}\n' });
+  commitTemplate(template, {
+    'package.json': '{ "a": 1 }\n',
+    [`${NOTES}/2026-09-05-a-release.yaml`]: noteYaml('2026-09-05-a-release', ['package.json']).replace('delivery: code-patch', 'delivery: package-release'),
+    [`${NOTES}/2026-09-05-a-history.yaml`]: noteYaml('2026-09-05-a-history', ['package.json']).replace('priority: normal', 'priority: ignore'),
+    [`${NOTES}/2026-09-05-b-code.yaml`]: noteYaml('2026-09-05-b-code', ['package.json']),
+  }, 'release and code');
+  const result = syncTemplate(config, root);
+  assert.deepEqual(result.unclaimedPaths, []);
+  assert.match(fs.readFileSync(path.join(root, 'patches', '2026-09-05-b-code.diff'), 'utf8'), /package\.json/);
+  assert.equal(loadUpgrades(root).find((upgrade) => upgrade.id === '2026-09-05-b-code').applyAfter, undefined);
+});
+
+test('the operator\'s git diff configuration does not change the patch', () => {
+  const { root, template, config } = syncFixture({ 'apps/api/main.ts': 'a\n', 'assets/logo.bin': Buffer.from([0, 1, 2, 3]) });
+  for (const [key, value] of [['diff.noprefix', 'true'], ['diff.mnemonicPrefix', 'true'], ['color.diff', 'always'], ['color.ui', 'always']]) {
+    git(template, ['config', key, value]);
+  }
+  commitTemplate(template, {
+    'apps/api/main.ts': 'b\n',
+    'assets/logo.bin': Buffer.from([0, 1, 2, 4, 0]),
+    [`${NOTES}/2026-09-03-api.yaml`]: noteYaml('2026-09-03-api', ['apps/api/**']),
+  }, 'api');
+  const result = syncTemplate(config, root);
+  const patch = path.join(root, 'patches', '2026-09-03-api.diff');
+  const text = fs.readFileSync(patch, 'utf8');
+  assert.doesNotMatch(text, /\u001b\[/, 'no colour escape codes');
+  assert.match(text, /^diff --git a\/apps\/api\/main\.ts b\/apps\/api\/main\.ts$/m);
+  assert.match(text, /^GIT binary patch$/m);
+  const downstream = downstreamAt(template, result.from);
+  git(downstream, ['apply', '--check', patch]);
 });

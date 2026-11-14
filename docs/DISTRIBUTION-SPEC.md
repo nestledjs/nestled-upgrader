@@ -115,6 +115,10 @@ Notes map 1:1 to today's `upgrades/*.yaml` records — the producer emits them i
 instead of (only) a local folder. `delivery`, `intent`, `affectedPaths`, and the package fields
 are unchanged from the current model, so the consumer's apply logic is reused verbatim.
 
+A note may also carry `skipIf` and `agentHints` (adaptation guidance for an agent that reads only
+the feed) and `applyAfter` (ids of notes it must be applied after). Consumers apply a release's
+notes in manifest order, and the producer writes them in an order that honours `applyAfter`.
+
 `review` is orthogonal to `delivery` — any note, including `hybrid`, may carry it when a release
 couples a mechanical change to a judgment call the template author can't make on the consumer's
 behalf. See `@nestledjs/upgrades`' README for the full consumer-side contract (why the baseline
@@ -179,7 +183,7 @@ came from*. `nestled-update init` reads it and sets `baselineRelease` with no gu
 | Command | What it does |
 |---|---|
 | existing `promote-template`, `sync-template`, `create-upgrade` | Author notes. `sync-template` skips archived notes (`upgrade-notes/archive/`), never rewrites an existing record, and narrows each note's patch to its `affectedPaths` when a range carries several notes (see HOWTO, "What sync records"). |
-| `feed-publish --channel canary [--title …] [--push] [--dry-run]` | Bundle unpublished downstream records into a new date-based release, copy their patches into the template's `.nestled-upgrades/`, advance the `canary` pointer, commit (and optionally push) the template. A `code-patch`/`hybrid` record with no patch is held back and listed rather than published, since consumers block on a patch-delivery note with no `patch`; naming one with `--note` fails. |
+| `feed-publish --channel canary [--title …] [--push] [--dry-run]` | Bundle unpublished downstream records into a new date-based release, copy their patches into the template's `.nestled-upgrades/`, advance the `canary` pointer, commit (and optionally push) the template. A `code-patch`/`hybrid` record with no patch is held back and listed rather than published, since consumers block on a patch-delivery note with no `patch`; naming one with `--note` fails. Notes are written in apply order: a note's `applyAfter: [<id>]` puts it after those notes, and otherwise records from an earlier sync come first, then id order. A cycle, or a prerequisite that is neither published nor in the release, is refused. Each entry carries the note's `skipIf`, `agentHints` and `applyAfter` when it has them. |
 | `feed-promote --to stable [--release <id>] [--push]` | Advance the `stable` (or named) pointer to a release; commit the template. Defaults to the current `canary` release. |
 | `feed-status` | Print the feed's channel pointers and releases. |
 | `baseline-fleet --at <release> [--channel canary] [--remote <url>] [--ref <branch>] [--dry-run]` | One-time migration (see §6): stamp every fleet site's `.nestled/upgrade-log.yaml` with baseline, channel, and feed remote/ref. |

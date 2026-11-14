@@ -88,7 +88,8 @@ Recommended fields:
 
 - `skipIf`: Conditions where downstream projects should skip or mark superseded.
 - `verification`: Commands downstream projects should run when applicable.
-- `agentHints`: Practical adaptation guidance for coding agents.
+- `agentHints`: Practical adaptation guidance for coding agents. Published with the note in the feed.
+- `applyAfter`: Ids of notes this one must be applied after, such as a follow-up to a file another note adds. `feed-publish` orders the release by it and refuses a cycle.
 
 ## Delivery Modes
 
