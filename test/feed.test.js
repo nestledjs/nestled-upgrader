@@ -119,6 +119,11 @@ test('feed-publish refuses an applyAfter cycle or a prerequisite left out of the
   assert.deepEqual(cycle.cycle, ['2026-07-01-a', '2026-07-01-b']);
   assert.match(cycle.reason, /cycle among 2026-07-01-a, 2026-07-01-b/);
 
+  write('2026-07-01-f', '2026-07-01-f');
+  const self = publishFeed(config, { dryRun: true, notes: ['2026-07-01-f'] }, root);
+  assert.equal(self.published, false);
+  assert.deepEqual(self.cycle, ['2026-07-01-f']);
+
   const leftOut = publishFeed(config, { dryRun: true, notes: ['2026-07-01-d'] }, root);
   assert.equal(leftOut.published, false);
   assert.match(leftOut.reason, /2026-07-01-d applies after 2026-07-01-c, which is not published and not in this release/);

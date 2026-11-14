@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { publishFeed } from '../lib/feed.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -3380,6 +3381,37 @@ test('a note whose every claimed path ships in an earlier note is recorded witho
   const record = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-09-02-b');
   assert.equal(record.patch, undefined);
   assert.match(record.patchOmitted, /ships in the patch of 2026-09-02-a/);
+  assert.deepEqual(record.applyAfter, ['2026-09-02-a']);
+});
+
+test('a note that gives up a shared path records the owner as a prerequisite', () => {
+  const { root, template, config } = syncFixture({ 'AGENTS.md': 'one\n', 'docs/guide.md': 'one\n' });
+  commitTemplate(template, {
+    'AGENTS.md': 'two\n',
+    'docs/guide.md': 'two\n',
+    [`${NOTES}/2026-09-04-a.yaml`]: noteYaml('2026-09-04-a', ['AGENTS.md']),
+    [`${NOTES}/2026-09-04-b.yaml`]: noteYaml('2026-09-04-b', ['AGENTS.md', 'docs/guide.md']),
+  }, 'shared file');
+  syncTemplate(config, root);
+  const record = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-09-04-b');
+  assert.deepEqual(record.applyAfter, ['2026-09-04-a']);
+  const result = publishFeed({ template: { path: '../nestled-template' } }, { dryRun: true, notes: ['2026-09-04-b'] }, root);
+  assert.equal(result.published, false);
+  assert.match(result.reason, /2026-09-04-b applies after 2026-09-04-a, which is not published/);
+});
+
+test('a note whose patch is never published does not take a shared path from a code-patch note', () => {
+  const { root, template, config } = syncFixture({ 'package.json': '{}\n' });
+  commitTemplate(template, {
+    'package.json': '{ "a": 1 }\n',
+    [`${NOTES}/2026-09-05-a-release.yaml`]: noteYaml('2026-09-05-a-release', ['package.json']).replace('delivery: code-patch', 'delivery: package-release'),
+    [`${NOTES}/2026-09-05-a-history.yaml`]: noteYaml('2026-09-05-a-history', ['package.json']).replace('priority: normal', 'priority: ignore'),
+    [`${NOTES}/2026-09-05-b-code.yaml`]: noteYaml('2026-09-05-b-code', ['package.json']),
+  }, 'release and code');
+  const result = syncTemplate(config, root);
+  assert.deepEqual(result.unclaimedPaths, []);
+  assert.match(fs.readFileSync(path.join(root, 'patches', '2026-09-05-b-code.diff'), 'utf8'), /package\.json/);
+  assert.equal(loadUpgrades(root).find((upgrade) => upgrade.id === '2026-09-05-b-code').applyAfter, undefined);
 });
 
 test('the operator\'s git diff configuration does not change the patch', () => {
