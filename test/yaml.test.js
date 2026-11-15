@@ -287,11 +287,15 @@ test('parses flow sequences of scalars', () => {
 applyAfter: [2026-01-02-first-note]
 several: [a, "b, c", 'd''e', true,]
 spaced: [ x , y ]
+blank: [ ]
+apostrophes: [don't, can't]
 quoted: "[not-a-list]"
 `);
   assert.deepEqual(parsed.applyAfter, ['2026-01-02-first-note']);
   assert.deepEqual(parsed.several, ['a', 'b, c', "d'e", true]);
   assert.deepEqual(parsed.spaced, ['x', 'y']);
+  assert.deepEqual(parsed.blank, []);
+  assert.deepEqual(parsed.apostrophes, ["don't", "can't"]);
   assert.equal(parsed.quoted, '[not-a-list]');
 });
 
