@@ -281,3 +281,27 @@ steps:
 `);
   assert.deepEqual(parsed.steps, [{ run: 'pnpm test', name: 'unit' }]);
 });
+
+test('parses flow sequences of scalars', () => {
+  const parsed = parseYaml(`
+applyAfter: [2026-01-02-first-note]
+several: [a, "b, c", 'd''e', true,]
+spaced: [ x , y ]
+quoted: "[not-a-list]"
+`);
+  assert.deepEqual(parsed.applyAfter, ['2026-01-02-first-note']);
+  assert.deepEqual(parsed.several, ['a', 'b, c', "d'e", true]);
+  assert.deepEqual(parsed.spaced, ['x', 'y']);
+  assert.equal(parsed.quoted, '[not-a-list]');
+});
+
+test('round-trips a string that starts with a bracket as a string', () => {
+  const source = { value: '[not-a-list]', list: ['a', 'b'] };
+  assert.deepEqual(parseYaml(stringifyYaml(source)), source);
+});
+
+test('refuses flow sequences it cannot read', () => {
+  assert.throws(() => parseYaml('a: [x, [y]]\n'), /Nested collections/);
+  assert.throws(() => parseYaml('a: [x, , y]\n'), /Empty item/);
+  assert.throws(() => parseYaml('a: ["x]\n'), /Unterminated quote/);
+});
