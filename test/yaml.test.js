@@ -316,6 +316,11 @@ intent: >
   assert.deepEqual(parsed.applyAfter, ['2026-11-14-first-note', '2026-11-14-second-note', '2026-11-16-third-note']);
   assert.deepEqual(parsed.spanning, ['a', 'b']);
   assert.equal(parsed.intent, 'Folded text.');
+  assert.deepEqual(parseYaml('agentHints:\n  ["Check the marker ]\n    before continuing", other]\n').agentHints, [
+    'Check the marker ] before continuing',
+    'other',
+  ]);
+  assert.deepEqual(parseYaml("hints:\n  ['it''s ]\n    fine', x]\n").hints, ["it's ] fine", 'x']);
   assert.throws(() => parseYaml('a:\n  [x, y\nb: 1\n'), /Unterminated YAML flow sequence/);
 });
 
