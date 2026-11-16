@@ -3570,3 +3570,24 @@ test('notes whose commits interleave on a file fall back for that file', () => {
   assert.equal(records.get('2026-10-05-b').patch, undefined);
   applyInOrder(template, result.from, [path.join(root, 'patches', '2026-10-05-a.diff')], ['apps/web/root.tsx']);
 });
+
+test('a merged pull request counts as one commit of its note', () => {
+  const { root, template, config } = syncFixture({ 'apps/web/root.tsx': ROOT_TSX });
+  const main = gitOutput(template, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  git(template, ['checkout', '--quiet', '-b', 'feature']);
+  commitTemplate(template, { 'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 a') }, 'a code');
+  commitTemplate(template, { [`${NOTES}/2026-10-06-a.yaml`]: noteYaml('2026-10-06-a', ['apps/web/root.tsx']) }, 'a note');
+  git(template, ['checkout', '--quiet', main]);
+  git(template, ['merge', '--quiet', '--no-ff', '-m', 'merge a', 'feature']);
+  const merge = gitOutput(template, ['rev-parse', '--short', 'HEAD']);
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 a').replace('line 4', 'line 4 b'),
+    [`${NOTES}/2026-10-06-b.yaml`]: noteYaml('2026-10-06-b', ['apps/web/root.tsx']),
+  }, 'b');
+  const result = syncTemplate(config, root);
+  assert.deepEqual(result.fallbackNotes, []);
+  const a = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-10-06-a');
+  assert.deepEqual(a.patchCommits, [merge]);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, 'patches', '2026-10-06-a.diff'), 'utf8'), /line 4 b/);
+  applyInOrder(template, result.from, ['2026-10-06-a', '2026-10-06-b'].map((id) => path.join(root, 'patches', `${id}.diff`)), ['apps/web/root.tsx']);
+});
