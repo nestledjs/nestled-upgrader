@@ -299,6 +299,26 @@ quoted: "[not-a-list]"
   assert.equal(parsed.quoted, '[not-a-list]');
 });
 
+test('parses a flow sequence wrapped onto the lines after its key', () => {
+  // Prettier writes a long `applyAfter` this way.
+  const parsed = parseYaml(`
+id: note
+applyAfter:
+  [2026-11-14-first-note, 2026-11-14-second-note, 2026-11-16-third-note]
+spanning:
+  [
+    a,
+    b,
+  ]
+intent: >
+  Folded text.
+`);
+  assert.deepEqual(parsed.applyAfter, ['2026-11-14-first-note', '2026-11-14-second-note', '2026-11-16-third-note']);
+  assert.deepEqual(parsed.spanning, ['a', 'b']);
+  assert.equal(parsed.intent, 'Folded text.');
+  assert.throws(() => parseYaml('a:\n  [x, y\nb: 1\n'), /Unterminated YAML flow sequence/);
+});
+
 test('round-trips a string that starts with a bracket as a string', () => {
   const source = { value: '[not-a-list]', list: ['a', 'b'] };
   assert.deepEqual(parseYaml(stringifyYaml(source)), source);
