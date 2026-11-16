@@ -3591,3 +3591,68 @@ test('a merged pull request counts as one commit of its note', () => {
   assert.doesNotMatch(fs.readFileSync(path.join(root, 'patches', '2026-10-06-a.diff'), 'utf8'), /line 4 b/);
   applyInOrder(template, result.from, ['2026-10-06-a', '2026-10-06-b'].map((id) => path.join(root, 'patches', `${id}.diff`)), ['apps/web/root.tsx']);
 });
+
+test('upgrade --all applies records in applyAfter order and defers a dependent whose prerequisite did not apply', () => {
+  const { root, template, config } = syncFixture({ 'apps/web/root.tsx': ROOT_TSX });
+  // As in the reverse-id case above: the first commit's note has the later id.
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 z'),
+    [`${NOTES}/2026-10-07-z.yaml`]: noteYaml('2026-10-07-z', ['apps/web/root.tsx']),
+  }, 'z');
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 z').replace('line 3', 'line 3 a'),
+    [`${NOTES}/2026-10-07-a.yaml`]: noteYaml('2026-10-07-a', ['apps/web/root.tsx']),
+  }, 'a');
+  const { from } = syncTemplate(config, root);
+  const upgrades = loadUpgrades(root);
+  assert.deepEqual(upgrades.map((upgrade) => upgrade.id), ['2026-10-07-a', '2026-10-07-z'], 'filename order is the wrong order');
+
+  const project = (downstream) => ({ ...config, projects: [{ name: 'project-a', path: downstream, defaultBranch: 'main', verification: [] }] });
+  const committed = (downstream) => {
+    git(downstream, ['config', 'user.email', 'test@example.com']);
+    git(downstream, ['config', 'user.name', 'Test User']);
+    git(downstream, ['add', '-A']);
+    git(downstream, ['commit', '--quiet', '--no-gpg-sign', '-m', 'base']);
+    return downstream;
+  };
+
+  const downstream = committed(downstreamAt(template, from));
+  const results = upgradeAll(project(downstream), upgrades, root);
+  assert.deepEqual(results.map((result) => result.upgrade), ['2026-10-07-z', '2026-10-07-a']);
+  const log = readUpgradeLog(project(downstream).projects[0], root);
+  assert.equal(log.upgrades['2026-10-07-z'].status, 'applied');
+  assert.equal(log.upgrades['2026-10-07-a'].status, 'applied');
+  assert.equal(fs.readFileSync(path.join(downstream, 'apps/web/root.tsx'), 'utf8'), gitOutput(template, ['show', 'HEAD:apps/web/root.tsx']) + '\n');
+
+  // A project where the prerequisite can't apply leaves the dependent pending, not blocked.
+  const diverged = downstreamAt(template, from);
+  fs.writeFileSync(path.join(diverged, 'apps/web/root.tsx'), 'a local rewrite\n');
+  committed(diverged);
+  const divergedConfig = project(diverged);
+  const second = upgradeAll(divergedConfig, upgrades, root);
+  assert.equal(second.find((result) => result.upgrade === '2026-10-07-a').recommendation, 'deferred');
+  const divergedLog = readUpgradeLog(divergedConfig.projects[0], root);
+  assert.equal(divergedLog.upgrades['2026-10-07-z'].status, 'blocked');
+  assert.notEqual(divergedLog.upgrades['2026-10-07-a']?.status, 'blocked');
+});
+
+test('a file one note adds and another removes keeps both notes on path scoping', () => {
+  const { root, template, config } = syncFixture({ 'apps/web/root.tsx': ROOT_TSX });
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'import { helper } from "./helper";'),
+    'apps/web/helper.ts': 'export const helper = 1;\n',
+    [`${NOTES}/2026-10-08-a.yaml`]: noteYaml('2026-10-08-a', ['apps/web/**']),
+  }, 'a adds a helper');
+  git(template, ['rm', '--quiet', 'apps/web/helper.ts']);
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'const helper = 1;'),
+    [`${NOTES}/2026-10-08-b.yaml`]: noteYaml('2026-10-08-b', ['apps/web/**']),
+  }, 'b inlines it');
+  const result = syncTemplate(config, root);
+  const a = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-10-08-a');
+  assert.equal(a.patchCommits, undefined);
+  assert.match(a.patchFallback[0], /^apps\/web\/root\.tsx: commit \w+ also changes apps\/web\/helper\.ts, which the range as a whole leaves unchanged$/);
+  // The importing change never ships without the helper: the whole-range diff has neither.
+  assert.doesNotMatch(fs.readFileSync(path.join(root, 'patches', '2026-10-08-a.diff'), 'utf8'), /import \{ helper \}/);
+  applyInOrder(template, result.from, [path.join(root, 'patches', '2026-10-08-a.diff')], ['apps/web/root.tsx']);
+});
