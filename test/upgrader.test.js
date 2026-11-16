@@ -3433,3 +3433,140 @@ test('the operator\'s git diff configuration does not change the patch', () => {
   const downstream = downstreamAt(template, result.from);
   git(downstream, ['apply', '--check', patch]);
 });
+const ROOT_TSX = ['import { a } from "./a";', 'line 2', 'line 3', 'line 4', 'export default function Root() {}', ''].join('\n');
+
+// Applies `patches` in order to a downstream matching the template at `from`, checking each first,
+// and asserts every listed file then matches the template's HEAD.
+function applyInOrder(template, from, patches, files) {
+  const downstream = downstreamAt(template, from);
+  for (const patch of patches) {
+    git(downstream, ['apply', '--check', patch]);
+    git(downstream, ['apply', patch]);
+  }
+  for (const file of files) {
+    assert.equal(fs.readFileSync(path.join(downstream, file), 'utf8'), gitOutput(template, ['show', `HEAD:${file}`]) + '\n', file);
+  }
+  return downstream;
+}
+
+test('notes that edit the same file in separate commits each get only their own hunks', () => {
+  const { root, template, config } = syncFixture({ 'apps/web/root.tsx': ROOT_TSX });
+  // The first commit's note has the later id, so only its commit order puts it first.
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 recovers the session'),
+    [`${NOTES}/2026-10-02-session.yaml`]: noteYaml('2026-10-02-session', ['apps/web/root.tsx']),
+  }, 'session recovery');
+  const first = gitOutput(template, ['rev-parse', '--short', 'HEAD']);
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 recovers the session').replace('line 4', 'import { codes } from "./error-codes";'),
+    'apps/web/error-codes.ts': 'export const codes = {};\n',
+    [`${NOTES}/2026-10-01-errors.yaml`]: noteYaml('2026-10-01-errors', ['apps/web/root.tsx', 'apps/web/error-codes.ts']),
+  }, 'error codes');
+  const second = gitOutput(template, ['rev-parse', '--short', 'HEAD']);
+  const result = syncTemplate(config, root);
+  assert.equal(result.created, true);
+  assert.deepEqual(result.fallbackNotes, []);
+  assert.deepEqual(result.unclaimedPaths, []);
+
+  const sessionPatch = path.join(root, 'patches', '2026-10-02-session.diff');
+  const errorsPatch = path.join(root, 'patches', '2026-10-01-errors.diff');
+  const session = fs.readFileSync(sessionPatch, 'utf8');
+  const errors = fs.readFileSync(errorsPatch, 'utf8');
+  assert.match(session, /^\+line 2 recovers the session$/m);
+  assert.doesNotMatch(session, /error-codes/, "the first note's patch carries none of the second note's change");
+  assert.match(errors, /^\+import \{ codes \} from "\.\/error-codes";$/m);
+  assert.match(errors, /^diff --git a\/apps\/web\/error-codes\.ts b\/apps\/web\/error-codes\.ts$/m);
+  assert.doesNotMatch(errors, /^\+line 2 recovers the session$/m, "the second note's patch carries none of the first note's change");
+
+  const records = new Map(loadUpgrades(root).map((upgrade) => [upgrade.id, upgrade]));
+  assert.deepEqual(records.get('2026-10-01-errors').applyAfter, ['2026-10-02-session'], 'commit order becomes apply order');
+  assert.equal(records.get('2026-10-02-session').applyAfter, undefined);
+  assert.deepEqual(records.get('2026-10-02-session').patchCommits, [first]);
+  assert.deepEqual(records.get('2026-10-01-errors').patchCommits, [second]);
+  assert.equal(records.get('2026-10-01-errors').patchFallback, undefined);
+
+  // The first patch applies alone, and the two in order reproduce the range.
+  git(downstreamAt(template, result.from), ['apply', '--check', sessionPatch]);
+  applyInOrder(template, result.from, [sessionPatch, errorsPatch], ['apps/web/root.tsx', 'apps/web/error-codes.ts']);
+});
+
+test('a code commit without a note belongs to the one note whose affectedPaths covers it', () => {
+  const { root, template, config } = syncFixture({ 'libs/auth/token.ts': 'a\n', 'docs/guide.md': 'a\n' });
+  commitTemplate(template, { 'libs/auth/token.ts': 'b\n' }, 'token fix');
+  const fix = gitOutput(template, ['rev-parse', '--short', 'HEAD']);
+  commitTemplate(template, { [`${NOTES}/2026-10-03-token.yaml`]: noteYaml('2026-10-03-token', ['libs/auth/**']) }, 'token note');
+  commitTemplate(template, {
+    'docs/guide.md': 'b\n',
+    [`${NOTES}/2026-10-03-docs.yaml`]: noteYaml('2026-10-03-docs', ['docs/**']),
+  }, 'docs');
+  const result = syncTemplate(config, root);
+  assert.deepEqual(result.fallbackNotes, []);
+  const token = loadUpgrades(root).find((upgrade) => upgrade.id === '2026-10-03-token');
+  assert.deepEqual(token.patchCommits, [fix]);
+  assert.match(fs.readFileSync(path.join(root, 'patches', '2026-10-03-token.diff'), 'utf8'), /libs\/auth\/token\.ts/);
+});
+
+test('a commit that changes several notes falls back to path scoping and says so in the record', () => {
+  const { root, template, config } = syncFixture({ 'apps/web/root.tsx': ROOT_TSX, 'apps/web/other.tsx': 'a\n', 'docs/guide.md': 'a\n' });
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 changed by a'),
+    [`${NOTES}/2026-10-04-a.yaml`]: noteYaml('2026-10-04-a', ['apps/web/root.tsx']),
+  }, 'a');
+  // One commit carries two notes and changes the file the first note already changed.
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 changed by a').replace('line 4', 'line 4 changed by b'),
+    'apps/web/other.tsx': 'b\n',
+    'docs/guide.md': 'b\n',
+    [`${NOTES}/2026-10-04-b.yaml`]: noteYaml('2026-10-04-b', ['apps/web/**']),
+    [`${NOTES}/2026-10-04-c.yaml`]: noteYaml('2026-10-04-c', ['docs/guide.md']),
+  }, 'b and c together');
+  const mixed = gitOutput(template, ['rev-parse', '--short', 'HEAD']);
+  const result = syncTemplate(config, root);
+
+  // The shared file falls back: it ships whole, once, in the first claimer's patch.
+  const a = fs.readFileSync(path.join(root, 'patches', '2026-10-04-a.diff'), 'utf8');
+  const b = fs.readFileSync(path.join(root, 'patches', '2026-10-04-b.diff'), 'utf8');
+  assert.match(a, /^\+line 2 changed by a$/m);
+  assert.match(a, /^\+line 4 changed by b$/m);
+  assert.doesNotMatch(b, /root\.tsx/);
+  assert.match(b, /apps\/web\/other\.tsx/);
+
+  const records = new Map(loadUpgrades(root).map((upgrade) => [upgrade.id, upgrade]));
+  assert.deepEqual(records.get('2026-10-04-a').patchFallback, [
+    `apps/web/root.tsx: commit ${mixed} changes the notes of 2026-10-04-b and 2026-10-04-c`,
+  ]);
+  assert.match(records.get('2026-10-04-b').patchFallback.join('\n'), /apps\/web\/other\.tsx: commit .* changes the notes of/);
+  assert.deepEqual(records.get('2026-10-04-b').applyAfter, ['2026-10-04-a']);
+  assert.deepEqual(
+    result.fallbackNotes.map((entry) => entry.id).sort(),
+    ['2026-10-04-a', '2026-10-04-b', '2026-10-04-c'],
+  );
+
+  applyInOrder(
+    template,
+    result.from,
+    ['2026-10-04-a', '2026-10-04-b', '2026-10-04-c'].map((id) => path.join(root, 'patches', `${id}.diff`)),
+    ['apps/web/root.tsx', 'apps/web/other.tsx', 'docs/guide.md'],
+  );
+});
+
+test('notes whose commits interleave on a file fall back for that file', () => {
+  const { root, template, config } = syncFixture({ 'apps/web/root.tsx': ROOT_TSX });
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 a'),
+    [`${NOTES}/2026-10-05-a.yaml`]: noteYaml('2026-10-05-a', ['apps/web/root.tsx']),
+  }, 'a');
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 a').replace('line 3', 'line 3 b'),
+    [`${NOTES}/2026-10-05-b.yaml`]: noteYaml('2026-10-05-b', ['apps/web/root.tsx']),
+  }, 'b');
+  commitTemplate(template, {
+    'apps/web/root.tsx': ROOT_TSX.replace('line 2', 'line 2 a').replace('line 3', 'line 3 b').replace('line 4', 'line 4 a'),
+    [`${NOTES}/2026-10-05-a.yaml`]: noteYaml('2026-10-05-a', ['apps/web/root.tsx'], 'review: Follow-up.\n'),
+  }, 'a again');
+  const result = syncTemplate(config, root);
+  const records = new Map(loadUpgrades(root).map((upgrade) => [upgrade.id, upgrade]));
+  assert.match(records.get('2026-10-05-a').patchFallback[0], /^apps\/web\/root\.tsx: 2026-10-05-a changes it again after another note did$/);
+  assert.equal(records.get('2026-10-05-b').patch, undefined);
+  applyInOrder(template, result.from, [path.join(root, 'patches', '2026-10-05-a.diff')], ['apps/web/root.tsx']);
+});
